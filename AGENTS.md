@@ -35,7 +35,8 @@ with your assumptions.
 10. Ask before adding any dependency. This applies especially to AGPL code (such as Ultralytics) and
     anything large.
 11. Organy must be treated both as a library and a binary. Keep all logic in library modules away from
-    the binary modules. Keep `__init__.py` light so `organy --help` stays fast.
+    the binary modules (`src/organy` and `src/organy/bin` respectively). Keep `__init__.py` light
+    so `organy --help` stays fast.
 
 ## How to work
 
