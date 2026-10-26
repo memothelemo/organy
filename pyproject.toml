@@ -1,0 +1,20 @@
+[project]
+name = "organy"
+version = "0.1.0"
+description = "Assisted categorization of photos from multiple photographers."
+readme = "README.md"
+authors = [
+    { name = "memothelemo", email = "dev@memothelemo.xyz" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "numpy>=2.5.4",
+    "opencv-contrib-python>=5.0.0.93",
+]
+
+[project.scripts]
+organy = "organy.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.12.5,<0.13.0"]
+build-backend = "uv_build"
