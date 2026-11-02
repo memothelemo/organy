@@ -134,7 +134,7 @@ def compute_photo_embedding(model: cv2.dnn.Net, photo: Photograph) -> NDArray[np
     # blobFromImage resizes the shorter side to 224, crops the centre square,
     # turns BGR into RGB and scales the pixels from 0-255 to 0-1.
     blob = cv2.dnn.blobFromImage(
-        photo.downscaled,
+        photo.decode_downscaled(),
         scalefactor=1 / 255,
         size=CLIP_INPUT_SIZE,
         swapRB=True,

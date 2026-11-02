@@ -64,11 +64,7 @@ def main(argv: list[str] | None = None) -> int:
     #    names, not for grouping.
     # 7. Inside each stack, suggest the best photo by sharpness (Laplacian variance)
     #    and exposure. Show the raw values, never as "confidence".
-    embeddings = pipeline.compute_embeddings(
-        photos,
-        Path("models/clip-vit-base-patch32-vision.onnx"),
-        args.workers
-    )
+    embeddings = pipeline.compute_embeddings(photos, "models/clip-vit-base-patch32-vision.onnx")
 
     return 0
 
