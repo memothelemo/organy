@@ -1,6 +1,9 @@
 # Local environment variables
 .env
 
+# Downloaded local models
+/models/
+
 # Python bytecode and caches
 __pycache__/
 *.py[cod]

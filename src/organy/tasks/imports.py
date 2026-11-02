@@ -113,25 +113,21 @@ def _load_photo_in_thread(path: Path, photographer: str) -> Photograph:
     # Pool threads don't inherit the caller's context, so I need to set it
     # inside each task rather than around pool.map.
     with logger.contextualize(thread_id=threading.get_native_id()):
-        return _load_photo(path, photographer)
+        """Decodes one photograph per path"""
+        start = time.perf_counter()
+        image = cv2.imdecode(read_bytes(path), cv2.IMREAD_COLOR_BGR)
+        if image is None: raise ValueError(f"cannot decode photo: {path}")
 
+        # Opening the file again is cheaper than reusing the bytes from read_bytes.
+        #
+        # Pillow reads only the ~6 KB header here, while io.BytesIO(data) would copy
+        # the whole file (about 10 MB for a 24 MP JPEG) just to read that header.
+        photograph = Photograph(image, path, photographer, read_exif(path))
+        elapsed_ms = (time.perf_counter() - start) * 1000
+        logger.trace(
+            "loaded picture in {:.1f} ms (phash={})",
+            elapsed_ms,
+            photograph.phash.tobytes().hex()
+        )
 
-def _load_photo(path: Path, photographer: str) -> Photograph:
-    """Decodes one photograph per path"""
-    start = time.perf_counter()
-    image = cv2.imdecode(read_bytes(path), cv2.IMREAD_COLOR_BGR)
-    if image is None: raise ValueError(f"cannot decode photo: {path}")
-
-    # Opening the file again is cheaper than reusing the bytes from read_bytes.
-    #
-    # Pillow reads only the ~6 KB header here, while io.BytesIO(data) would copy
-    # the whole file (about 10 MB for a 24 MP JPEG) just to read that header.
-    photograph = Photograph(image, path, photographer, read_exif(path))
-    elapsed_ms = (time.perf_counter() - start) * 1000
-    logger.trace(
-        "loaded picture in {:.1f} ms (phash={})",
-        elapsed_ms,
-        photograph.phash.tobytes().hex()
-    )
-
-    return photograph
+        return photograph

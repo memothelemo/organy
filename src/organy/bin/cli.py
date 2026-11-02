@@ -42,11 +42,11 @@ def main(argv: list[str] | None = None) -> int:
     # 1. Read each photo's capture time from EXIF (DateTimeOriginal, plus
     #    SubSecTimeOriginal and OffsetTimeOriginal when present). Flag photos
     #    without one instead of guessing.
-    # 2. Compute one image embedding per photo with a pretrained vision model
-    #    (CLIP or SigLIP, or DINOv2 for pure visual similarity) in ONNX through
-    #    `cv2.dnn`. Two photos of the same scene get similar vectors even with
-    #    different colour grading and viewpoints, and comparing all of them is
-    #    one matrix product, like the phash table in deduplicate.py.
+    # 2. Compute an embedding for each photo: a fingerprint like phash, but
+    #    with more data and more accurate. It describes what the photo shows,
+    #    so two photos of the same scene get close embeddings even with
+    #    different colour grading or viewpoints. It comes from a downloaded
+    #    model (e.g. CLIP) run through `cv2.dnn`.
     # 3. Estimate each photographer's clock offset. Take the closest embedding
     #    pairs between different photographers, confirm them with ORB matches
     #    and a RANSAC homography, and use the median of their time
@@ -64,6 +64,11 @@ def main(argv: list[str] | None = None) -> int:
     #    names, not for grouping.
     # 7. Inside each stack, suggest the best photo by sharpness (Laplacian variance)
     #    and exposure. Show the raw values, never as "confidence".
+    embeddings = pipeline.compute_embeddings(
+        photos,
+        Path("models/clip-vit-base-patch32-vision.onnx"),
+        args.workers
+    )
 
     return 0
 

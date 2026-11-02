@@ -7,10 +7,29 @@ import time
 
 from collections.abc import Iterable
 from loguru import logger
+from numpy.typing import NDArray
 from pathlib import Path
 
 from organy.models import Photograph
-from organy.tasks import collect_photos, get_duplicated_photos, imports
+from organy.tasks import collect_photos, embedding, get_duplicated_photos, imports
+
+
+def compute_embeddings(
+    photos: list[Photograph],
+    model_path: Path,
+    workers: int = 1
+) -> dict[Photograph, NDArray]:
+    """
+    Stage 4.1.: Compute every photograph's own embedding to check for its
+    similarity later in 4.2. This is like phash but it is more accurate representation
+    of a fingerprint of an image, to try and minimize the duplicates as possible.
+    """
+    start = time.perf_counter()
+    embeddings = embedding.compute_embeddings(photos, model_path, workers=workers)
+    elapsed_ms = (time.perf_counter() - start) * 1000
+
+    logger.info("computed {} embedding(s) (took {:.1f} ms)", len(embeddings), elapsed_ms)
+    return embeddings
 
 
 def import_photos(sources: Iterable[Path]) -> dict[Path, str]:
