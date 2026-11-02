@@ -10,12 +10,66 @@ import sys
 
 from pathlib import Path
 
-from organy.importer import collect_photos, load_photos
-from organy.tasks import compute_burst_photos, deduplicate_photos
+from loguru import logger
+from organy import pipeline
 from organy.utils.os import get_recommended_workers
+from organy.utils.types import non_zero_uint
 
 
 def main(argv: list[str] | None = None) -> int:
+    """
+    The main entrypoint of the Organy binary, where it accepts custom arguments
+    otherwise it will default to `sys.argv` automatically by argparse.
+    
+    Ideally, there should no binary related functions like loading a logger
+    because this function will be used for unit testing.
+    """
+    args = _build_parser().parse_args(argv)
+    logger.debug("using organy with {} worker(s)", args.workers)
+
+    try:
+        imported = pipeline.import_photos(args.sources)
+    except FileNotFoundError as error:
+        print(f"organy: {error}", file=sys.stderr)
+        return 1
+
+    photos = pipeline.load_photos(imported, workers=args.workers)
+    photos, _ = pipeline.remove_duplicates(photos)
+
+    # TODO: Stage 4 (Fun part), as functions in `organy.pipeline`. Each step
+    # only suggests. The user must review everything at the end.
+    #
+    # 1. Read each photo's capture time from EXIF (DateTimeOriginal, plus
+    #    SubSecTimeOriginal and OffsetTimeOriginal when present). Flag photos
+    #    without one instead of guessing.
+    # 2. Compute one image embedding per photo with a pretrained vision model
+    #    (CLIP or SigLIP, or DINOv2 for pure visual similarity) in ONNX through
+    #    `cv2.dnn`. Two photos of the same scene get similar vectors even with
+    #    different colour grading and viewpoints, and comparing all of them is
+    #    one matrix product, like the phash table in deduplicate.py.
+    # 3. Estimate each photographer's clock offset. Take the closest embedding
+    #    pairs between different photographers, confirm them with ORB matches
+    #    and a RANSAC homography, and use the median of their time
+    #    differences. Let the user correct it later.
+    # 4. Split the corrected timeline into events wherever there is a long gap
+    #    between photos. Never merge events automatically (rule 6).
+    # 5. Inside each event, group photos of the same scene or moment into
+    #    stacks by embedding similarity, with ORB matches to confirm close
+    #    calls. Faces add evidence: detect with `cv2.FaceDetectorYN` (YuNet)
+    #    and compare with `cv2.FaceRecognizerSF` (SFace). Stacks never change
+    #    a photo's event (rule 5).
+    # 6. Tag each photo by comparing its CLIP embedding with text prompts
+    #    ("stage", "group photo", "food", ...). The prompts are embedded once,
+    #    so tags cost almost nothing per photo. Use them for search and stack
+    #    names, not for grouping.
+    # 7. Inside each stack, suggest the best photo by sharpness (Laplacian variance)
+    #    and exposure. Show the raw values, never as "confidence".
+
+    return 0
+
+
+def run() -> int:
+    """Starts Organy as a program, as the `organy` command and `uv run organy` do."""
     # Windows writes piped output in the locale's code page (e.g. cp1252),
     # which cannot encode many non-ASCII paths. Always write UTF-8 instead.
     # backslashreplace keeps undecodable Linux filenames from crashing print.
@@ -24,40 +78,14 @@ def main(argv: list[str] | None = None) -> int:
         if isinstance(stream, io.TextIOWrapper):
             stream.reconfigure(encoding="utf-8", errors="backslashreplace")
 
-    args = _build_parser().parse_args(argv)
+    import dotenv
+    import organy.bin.logger as logger
 
-    # Stage #1: Collect all photos from given sources with argv
-    try:
-        photos = collect_photos(args.sources)
-    except FileNotFoundError as error:
-        print(f"organy: {error}", file=sys.stderr)
-        return 1
+    dotenv.load_dotenv()
+    logger.setup_for_binary()
 
-    # Stage 2: Downscaling all photographs (Photograph class does this automatically)
-    photos = load_photos(photos, workers=args.workers)
-
-    # Stage 3: Remove any duplicated/burst photographs
-    groups = deduplicate_photos(photos)
-    for group in groups:
-        if len(group) > 1:
-            print(f"Keeping {group[0].path}")
-            for duplicate in group[1:]:
-                print(f"  duplicate: {duplicate.path}")
-
-    photos = [group[0] for group in groups]
-    print(f"{len(photos)} unique photo(s) out of {sum(len(group) for group in groups)}.")
-
-    bursts = compute_burst_photos(photos)
-    for burst in bursts:
-        if len(burst) > 1:
-            print(f"Keeping {burst[0].path}")
-            for frame in burst[1:]:
-                print(f"  burst frame: {frame.path}")
-
-    photos = [burst[0] for burst in bursts]
-    print(f"{len(photos)} photo(s) left after setting aside burst frames.")
-
-    return 0
+    # argparse automatically defaults to `sys.argv` if argv is None.
+    return main()
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -75,16 +103,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "-w",
         "--workers",
-        type=_non_zero_int,
+        type=non_zero_uint,
         help="number of workers for Organy to utilize",
         default=get_recommended_workers()
     )
     return parser
-
-
-def _non_zero_int(value):
-    iv = int(value)
-    if iv == 0:
-        raise argparse.ArgumentTypeError(f"value must be a non-zero integer, got {value}")
-
-    return iv

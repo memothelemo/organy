@@ -1,12 +1,12 @@
-from organy.tasks.deduplicate_photos import deduplicate_photos
-from organy.tasks.burst import compute_burst_photos, remove_burst_photos
-from organy.tasks.blur import MotionBlur, compute_motion_blur, flag_motion_blurred_photos
+from organy.tasks.deduplicate import get_duplicated_photos
+
+from organy.tasks.imports import collect_photos, load_photos
+import organy.tasks.imports as imports
 
 __all__ = [
-    "deduplicate_photos",
-    "compute_burst_photos",
-    "remove_burst_photos",
-    "MotionBlur",
-    "compute_motion_blur",
-    "flag_motion_blurred_photos",
+    "get_duplicated_photos",
+
+    "imports",
+    "collect_photos",
+    "load_photos",
 ]

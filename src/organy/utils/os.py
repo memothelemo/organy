@@ -1,6 +1,4 @@
-"""
-Quick and dirty reusable operating system related functions.
-"""
+"""Quick and dirty reusable operating system related functions."""
 
 import numpy as np
 
@@ -13,10 +11,9 @@ def get_recommended_workers() -> int:
     """
     Returns how many worker threads Organy should use.
 
-    It is 75% of the logical CPU cores (rounded down), and never less than
-    one: 1 core gives 1, 2 give 1, 4 give 3, 12 give 9. A quarter of the
-    cores is left free so the operating system, the UI and OpenCV's own
-    internal threads (e.g. inside `cv2.resize`) stay responsive.
+    It is calculated by multiplying the 75% of the logical CPU cores, then
+    rounded it down. A remaining cores are left free for the operating system,
+    the UI and OpenCV's own threads stay responsive.
     """
     count = cpu_count()
     three_fourths = int(count * 0.75)

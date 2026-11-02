@@ -4,7 +4,7 @@ from numpy.typing import NDArray
 from pathlib import Path
 from typing import Any
 
-from organy.utils.cv import downscale
+from organy.utils.image import downscale
 
 
 class Photograph:
@@ -45,7 +45,7 @@ class Photograph:
         data, with its originating file path, photographer and EXIF tags.
 
         The image will then be downscaled where its longest side is in 1,000 pixels
-        for optimization purposes (and impractical to load a very large image).
+        for optimization purposes (and impractical to store a very large image).
         """
         self.downscaled = downscale(image, 1_000)
         self.path = path

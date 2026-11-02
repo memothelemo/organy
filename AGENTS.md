@@ -13,7 +13,7 @@ After the processing images, a human can review every suggestion and makes a fin
 This project should expect to work with the following system environment conditions:
 - A laptop with RTX 2050 (4 GB of VRAM) and 16 GB of RAM
 - Windows 11, Linux and WSL, and MacOS
-- Every photo must be processed under one second per photo on CPU at preview resolution.
+- Every photo must be processed under three seconds per photo on CPU at preview resolution.
 
 ## Limitations and Constraints
 
@@ -72,7 +72,7 @@ Since computer memory is limited and photographs are mostly large in size, it is
 all imported photographs; not an intended feature to decrease the quality, but to allow the model easily
 process each photograph if the user is running on a low powered discrete GPU.
 
-### Stage 3: Removing Duplicate and/or Burst photographs
+### Stage 3: Separating Duplicate and/or Burst photographs
 
 Processing duplicate and burst photographs is wasteful, therefore the program must identify possible
 duplicated and burst photographs before it is even processed for categorization, metadata checking and
