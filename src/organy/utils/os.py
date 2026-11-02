@@ -5,7 +5,23 @@ Quick and dirty reusable operating system related functions.
 import numpy as np
 
 from numpy.typing import NDArray
+from multiprocessing import cpu_count
 from pathlib import Path
+
+
+def get_recommended_workers() -> int:
+    """
+    Returns how many worker threads Organy should use.
+
+    It is 75% of the logical CPU cores (rounded down), and never less than
+    one: 1 core gives 1, 2 give 1, 4 give 3, 12 give 9. A quarter of the
+    cores is left free so the operating system, the UI and OpenCV's own
+    internal threads (e.g. inside `cv2.resize`) stay responsive.
+    """
+    count = cpu_count()
+    three_fourths = int(count * 0.75)
+    return three_fourths if three_fourths > 0 else count
+
 
 def read_bytes(path: Path) -> NDArray:
     """

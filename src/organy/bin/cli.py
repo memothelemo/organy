@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 
 from organy.importer import collect_photos, load_photos
+from organy.utils.os import get_recommended_workers
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -30,7 +31,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"organy: {error}", file=sys.stderr)
         return 1
 
-    print(load_photos(photos, workers=12))
+    print(load_photos(photos, workers=args.workers))
     return 0
 
 
@@ -46,4 +47,19 @@ def _build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="photo files or folders to import",
     )
+    parser.add_argument(
+        "-w",
+        "--workers",
+        type=_non_zero_int,
+        help="number of workers for Organy to utilize",
+        default=get_recommended_workers()
+    )
     return parser
+
+
+def _non_zero_int(value):
+    iv = int(value)
+    if iv == 0:
+        raise argparse.ArgumentTypeError(f"value must be a non-zero integer, got {value}")
+
+    return iv
