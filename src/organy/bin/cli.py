@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 from organy.importer import collect_photos, load_photos
-from organy.tasks.deduplicate_photos import deduplicate_photos
+from organy.tasks import compute_burst_photos, deduplicate_photos
 from organy.utils.os import get_recommended_workers
 
 
@@ -46,6 +46,16 @@ def main(argv: list[str] | None = None) -> int:
 
     photos = [group[0] for group in groups]
     print(f"{len(photos)} unique photo(s) out of {sum(len(group) for group in groups)}.")
+
+    bursts = compute_burst_photos(photos)
+    for burst in bursts:
+        if len(burst) > 1:
+            print(f"Keeping {burst[0].path}")
+            for frame in burst[1:]:
+                print(f"  burst frame: {frame.path}")
+
+    photos = [burst[0] for burst in bursts]
+    print(f"{len(photos)} photo(s) left after setting aside burst frames.")
 
     return 0
 
