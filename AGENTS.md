@@ -49,6 +49,11 @@ with your assumptions.
 - Prefer the simplest implementation that fully solves the requested problem.
 - Keep changes scoped to the request and clean up what your own changes make obsolete. Do not refactor 
   unrelated code.
+- Write docstrings in plain language, for another person reading the code. Do not write them from
+  the contributors' point of view ("I", "we", "our", "let's"). Describe what the code does ("Loads
+  every photo...") and name people by their role, such as "the user" for whoever runs Organy ("The
+  photographer is the name of the folder the user selected").
+- Comments may use the first person like a contributor's note such as "I need to...".
 
 ## Proposed Architecture
 
