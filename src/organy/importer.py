@@ -2,10 +2,59 @@
 Collects photographs from the files and folders a user selected.
 """
 
+import cv2
+import hashlib
+import numpy as np
+
 from collections.abc import Iterable
+from numpy.typing import NDArray
 from pathlib import Path
 
 PHOTO_SUFFIXES = {".jpg", ".jpeg", ".png"}
+
+# Longest side, in pixels, of a downscaled photograph.
+MAX_SIDE = 1000
+
+
+def downscale(image: NDArray) -> NDArray:
+    """
+    Shrinks an image so its longer side is at most MAX_SIDE pixels while
+    keeping its aspect ratio. Smaller images are returned as they are, since
+    upscaling only adds blur.
+    """
+    height, width = image.shape[:2]
+    scale = MAX_SIDE / max(height, width)
+    if scale >= 1:
+        return image
+
+    size = (max(1, round(width * scale)), max(1, round(height * scale)))
+    # INTER_AREA averages neighbouring pixels, which avoids aliasing when shrinking.
+    return cv2.resize(image, size, interpolation=cv2.INTER_AREA)
+
+
+class Photograph:
+    """
+    Imported photograph where it contains the raw downscaled image 
+    data, attributions, EXIF and SHA1 hash of the original image.
+    """
+
+    # Downscaled version of the original photograph.
+    downscaled: NDArray
+
+    # SHA1 hash of the original photograph.
+    sha1: str
+
+    # Original path of the imported photograph
+    path: Path
+
+    def __init__(self, path: Path, binary: NDArray) -> None:
+        self.path = path
+        self.sha1 = hashlib.sha1(binary.flatten()).hexdigest()
+        self.downscaled = downscale(binary)
+
+
+    def __str__(self) -> str:
+        return f"Photograph({self.path}, {self.sha1[0:5]})"
 
 
 def is_maybe_photo(path: Path) -> bool:
@@ -17,6 +66,22 @@ def is_maybe_photo(path: Path) -> bool:
     """
     # TODO: Add an actual is_photo function where it checks the file contents.
     return path.suffix.lower() in PHOTO_SUFFIXES and not path.name.startswith(".")
+
+
+def load_photos(photos: list[Path]) -> list[Photograph]:
+    """
+    Loads all photo files passed from the photos parameter.
+    """
+    results: list[Photograph] = list()
+    for path in photos:
+        image = cv2.imdecode(np.fromfile(path, dtype=np.uint8), cv2.IMREAD_COLOR_BGR)
+        if image is None:
+            raise FileNotFoundError(f"no such file: {path}")
+
+        cached = Photograph(path, image)
+        results.append(cached)
+
+    return results
 
 
 def collect_photos(sources: Iterable[Path]) -> list[Path]:

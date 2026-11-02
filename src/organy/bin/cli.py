@@ -10,7 +10,7 @@ import sys
 
 from pathlib import Path
 
-from organy.importer import collect_photos
+from organy.importer import collect_photos, load_photos
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -53,15 +53,15 @@ def main(argv: list[str] | None = None) -> int:
         print(f"organy: {error}", file=sys.stderr)
         return 1
 
-    for photo in photos:
+    for photo in load_photos(photos):
         print(photo)
     print(f"Found {len(photos)} photo(s).")
 
-    from organy.bursts import find_bursts
+    # from organy.bursts import find_bursts
 
-    for number, burst in enumerate(find_bursts(photos), 1):
-        print(f"Burst {number}: {burst[0].parent}")
-        for photo in burst:
-            print(f"  {photo.name}")
+    # for number, burst in enumerate(find_bursts(photos), 1):
+    #     print(f"Burst {number}: {burst[0].parent}")
+    #     for photo in burst:
+    #         print(f"  {photo.name}")
 
     return 0
