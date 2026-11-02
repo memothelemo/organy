@@ -1,10 +1,11 @@
 import cv2
 
+from datetime import datetime
 from numpy.typing import NDArray
 from pathlib import Path
 from typing import Any
 
-from organy.utils.image import downscale
+from organy.utils.image import downscale, read_capture_time
 
 
 class Photograph:
@@ -21,6 +22,22 @@ class Photograph:
 
     """Photographer who took this photo, named after the folder it was imported from."""
     photographer: str
+
+    """
+    When the photo was taken, according to the clock of the camera that took it.
+    It comes from the photo's EXIF ("DateTimeOriginal", with "SubsecTimeOriginal"
+    and "OffsetTimeOriginal" when present, see `read_capture_time`).
+
+    Each camera's clock may be set a little or a lot off, so times from different
+    photographers cannot be compared directly until their clock offsets are corrected.
+    
+    The file's own dates (its creation or modification time) are never used,
+    not even as a fallback. They change whenever a photo is copied or transferred,
+    so they do not tell when it was taken.
+
+    It is None when the photo has no usable capture time in its EXIF.
+    """
+    camera_time: datetime | None
 
     """
     Camera details saved inside the photo file, such as the camera model ("Model")
@@ -51,6 +68,7 @@ class Photograph:
         self.path = path
         self.photographer = photographer
         self.exif = exif
+        self.camera_time = read_capture_time(exif)
 
         # The fingerprint only looks at a tiny 32x32 version of the photo, so the
         # downscaled copy gives the same result faster. Each photo gets its own
