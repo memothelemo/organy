@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 
 from organy.importer import collect_photos, load_photos
+from organy.tasks.deduplicate_photos import deduplicate_photos
 from organy.utils.os import get_recommended_workers
 
 
@@ -25,13 +26,27 @@ def main(argv: list[str] | None = None) -> int:
 
     args = _build_parser().parse_args(argv)
 
+    # Stage #1: Collect all photos from given sources with argv
     try:
         photos = collect_photos(args.sources)
     except FileNotFoundError as error:
         print(f"organy: {error}", file=sys.stderr)
         return 1
 
-    print(load_photos(photos, workers=args.workers))
+    # Stage 2: Downscaling all photographs (Photograph class does this automatically)
+    photos = load_photos(photos, workers=args.workers)
+
+    # Stage 3: Remove any duplicated/burst photographs
+    groups = deduplicate_photos(photos)
+    for group in groups:
+        if len(group) > 1:
+            print(f"Keeping {group[0].path}")
+            for duplicate in group[1:]:
+                print(f"  duplicate: {duplicate.path}")
+
+    photos = [group[0] for group in groups]
+    print(f"{len(photos)} unique photo(s) out of {sum(len(group) for group in groups)}.")
+
     return 0
 
 
