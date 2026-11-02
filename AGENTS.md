@@ -1,7 +1,7 @@
 # Agent Instructions
 
-You're working on a graphics project entitled Organy, or its longer academic form, "*Assisted Categorization*
-*of Photos from Multiple Photographers Using Visual Features and Capture Metadata*."
+You're working on a computer vision project entitled Organy, or its longer academic form, "*Assisted*
+*Categorization of Photos from Multiple Photographers Using Visual Features and Capture Metadata*."
 
 This project aims to assist users in sorting possible photographs contributed by multiple photographers
 whose all of them have different file names, camera clocks, viewpoints and color grading.

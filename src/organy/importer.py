@@ -13,7 +13,7 @@ def is_maybe_photo(path: Path) -> bool:
     Checks whether a path looks like a supported photo (JPEG or PNG).
 
     Names starting with a dot are skipped because macOS leaves "._DSC_0001.jpg"
-    metadata files next to actal photos.
+    metadata files next to actual photos.
     """
     # TODO: Add an actual is_photo function where it checks the file contents.
     return path.suffix.lower() in PHOTO_SUFFIXES and not path.name.startswith(".")

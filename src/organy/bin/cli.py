@@ -5,7 +5,10 @@ The real work itself lives in Organy's library modules.
 """
 
 import argparse
+import matplotlib.pyplot as plt
+import numpy as np
 import sys
+
 from pathlib import Path
 
 from organy.importer import collect_photos
@@ -49,8 +52,40 @@ def main(argv: list[str] | None = None) -> int:
         print(f"organy: {error}", file=sys.stderr)
         return 1
 
-    for photo in photos:
-        print(photo)
 
-    print(f"Found {len(photos)} photo(s).")
+    import cv2
+    # from organy.processor import is_burst_photo
+
+    # for photo in photos:
+    #     print(photo)
+
+    #     image = cv2.imread(photo)
+    #     print(is_burst_photo(image))
+
+    sample_photo = cv2.imread(photos[0])
+    if sample_photo is None: return 1
+
+    output = cv2.cvtColor(sample_photo, cv2.COLOR_BGR2GRAY)
+
+    # Perform FFT on the image
+    fft_image = np.fft.fft2(output)
+    fft_shifted = np.fft.fftshift(fft_image)
+    magnitude_spectrum = 20 * np.log(np.abs(fft_shifted))
+
+    output = cv2.resize(sample_photo, (500, 500))
+    cv2.putText(
+        output,
+        "{}".format(str(photos[0])),
+        (0, 50),
+        cv2.FONT_HERSHEY_PLAIN,
+        1,
+        (0, 0, 255),
+        2,
+        cv2.LINE_AA
+    )
+
+    cv2.imshow("hello", magnitude_spectrum)
+
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
     return 0
