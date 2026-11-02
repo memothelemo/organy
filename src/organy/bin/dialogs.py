@@ -7,6 +7,7 @@ still works without a display when paths are given on the command line.
 """
 
 import sys
+from collections.abc import Iterable
 from pathlib import Path
 
 # Tk matches patterns case-sensitively on Linux, so list both cases.
@@ -61,7 +62,8 @@ def ask_photo_sources() -> list[Path]:
     listbox = tk.Listbox(root, width=80, height=12)
     listbox.pack(fill="both", expand=True, padx=8, pady=8)
 
-    def add(paths: list[str]) -> None:
+    # Iterable, not list: askopenfilenames returns a tuple, or "" when cancelled.
+    def add(paths: Iterable[str]) -> None:
         for name in paths:
             path = Path(name)
             if path not in chosen:

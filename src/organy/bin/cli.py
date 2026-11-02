@@ -5,8 +5,7 @@ The real work itself lives in Organy's library modules.
 """
 
 import argparse
-import matplotlib.pyplot as plt
-import numpy as np
+import io
 import sys
 
 from pathlib import Path
@@ -33,7 +32,9 @@ def main(argv: list[str] | None = None) -> int:
     # which cannot encode many non-ASCII paths; always write UTF-8 instead.
     # backslashreplace keeps undecodable Linux filenames from crashing print.
     for stream in (sys.stdout, sys.stderr):
-        stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+        # Streams can be replaced (e.g. by test runners) with ones lacking reconfigure().
+        if isinstance(stream, io.TextIOWrapper):
+            stream.reconfigure(encoding="utf-8", errors="backslashreplace")
 
     args = build_parser().parse_args(argv)
 
@@ -52,40 +53,15 @@ def main(argv: list[str] | None = None) -> int:
         print(f"organy: {error}", file=sys.stderr)
         return 1
 
+    for photo in photos:
+        print(photo)
+    print(f"Found {len(photos)} photo(s).")
 
-    import cv2
-    # from organy.processor import is_burst_photo
+    from organy.bursts import find_bursts
 
-    # for photo in photos:
-    #     print(photo)
+    for number, burst in enumerate(find_bursts(photos), 1):
+        print(f"Burst {number}: {burst[0].parent}")
+        for photo in burst:
+            print(f"  {photo.name}")
 
-    #     image = cv2.imread(photo)
-    #     print(is_burst_photo(image))
-
-    sample_photo = cv2.imread(photos[0])
-    if sample_photo is None: return 1
-
-    output = cv2.cvtColor(sample_photo, cv2.COLOR_BGR2GRAY)
-
-    # Perform FFT on the image
-    fft_image = np.fft.fft2(output)
-    fft_shifted = np.fft.fftshift(fft_image)
-    magnitude_spectrum = 20 * np.log(np.abs(fft_shifted))
-
-    output = cv2.resize(sample_photo, (500, 500))
-    cv2.putText(
-        output,
-        "{}".format(str(photos[0])),
-        (0, 50),
-        cv2.FONT_HERSHEY_PLAIN,
-        1,
-        (0, 0, 255),
-        2,
-        cv2.LINE_AA
-    )
-
-    cv2.imshow("hello", magnitude_spectrum)
-
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
     return 0

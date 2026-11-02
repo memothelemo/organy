@@ -37,6 +37,12 @@ with your assumptions.
 11. Organy must be treated both as a library and a binary. Keep all logic in library modules away from
     the binary modules (`src/organy` and `src/organy/bin` respectively). Keep `__init__.py` light
     so `organy --help` stays fast.
+12. Use OpenCV's class style names (e.g. `cv2.ORB.create()`) instead of the flat underscore aliases
+    (e.g. `cv2.ORB_create()`). The aliases come from the C++ bindings and Pylance cannot resolve
+    them, so it reports errors in human's IDE.
+13. All code must pass Pylance without errors. It is strict about type resolution, so add type
+    hints wherever it cannot infer a type on its own. Find ways on how to resolve type resolution
+    errors.
 
 ## How to work
 
