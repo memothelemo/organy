@@ -1,10 +1,11 @@
 """Importing photos related tasks"""
 
 import cv2
+import itertools
 import threading
 import time
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from loguru import logger
 from pathlib import Path
@@ -20,7 +21,8 @@ def load_photos(photos: Mapping[Path, str], workers=1) -> list[Photograph]:
     """
     Loads every photo in `photos`, which pairs each photo's path with its
     photographer (this is what `collect_photos` returns). The loaded photos
-    come back in the same order.
+    come back in the same order. A photo that OpenCV cannot decode, such as a
+    damaged or empty file, is skipped with a warning.
 
     Threads are used instead of processes because OpenCV releases the GIL
     while decoding and resizing, so threads already run in parallel without
@@ -33,8 +35,24 @@ def load_photos(photos: Mapping[Path, str], workers=1) -> list[Photograph]:
     (about 300 MB at 4). Speed stops improving much past 4 on a typical
     laptop. It must be at least 1, or ThreadPoolExecutor raises ValueError.
     """
+    # Counts finished photos for the progress in the log. Photos finish out of
+    # order across threads, so the count comes from a shared counter rather
+    # than each photo's position, and the lock keeps two threads from taking
+    # the same number.
+    total = len(photos)
+    finished = itertools.count(1)
+    lock = threading.Lock()
+
+    def next_finished() -> int:
+        with lock: return next(finished)
+
+    def load(path: Path, photographer: str) -> Photograph | None:
+        return _load_photo_in_thread(path, photographer, next_finished, total)
+
+    logger.debug("loading {} photo(s) with {} worker(s)", total, workers)
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        return list(pool.map(_load_photo_in_thread, photos.keys(), photos.values()))
+        loaded = pool.map(load, photos.keys(), photos.values())
+        return [photo for photo in loaded if photo is not None]
 
 
 def resolve_photographer(path: Path, exif: dict[str, Any] | None = None) -> str | None:
@@ -104,19 +122,36 @@ def collect_photos(sources: Iterable[Path]) -> dict[Path, str]:
     return dict(sorted(photos.items()))
 
 
-def _load_photo_in_thread(path: Path, photographer: str) -> Photograph:
+def _load_photo_in_thread(
+    path: Path, photographer: str, next_finished: Callable[[], int], total: int
+) -> Photograph | None:
     """
     Loads one photo like `_load_photo`, tagging its log lines with the ID of
     the worker thread that loads it, so lines from parallel loads can be told
     apart.
+
+    `next_finished` gives how many photos have finished loading, counting this
+    one, and `total` is how many there are, for the "(1 of 500)" progress.
+
+    It returns None, after logging a warning, when OpenCV cannot decode the
+    photo.
     """
     # Pool threads don't inherit the caller's context, so I need to set it
     # inside each task rather than around pool.map.
     with logger.contextualize(thread_id=threading.get_native_id()):
         """Decodes one photograph per path"""
         start = time.perf_counter()
-        image = cv2.imdecode(read_bytes(path), cv2.IMREAD_COLOR_BGR)
-        if image is None: raise ValueError(f"cannot decode photo: {path}")
+
+        # imdecode returns None for data it cannot decode, but raises for an
+        # empty file, so both count as a failed photo.
+        try:
+            image = cv2.imdecode(read_bytes(path), cv2.IMREAD_COLOR_BGR)
+        except cv2.error:
+            image = None
+
+        if image is None:
+            logger.warning("skipped picture ({} of {}), cannot decode {}", next_finished(), total, path)
+            return None
 
         # Opening the file again is cheaper than reusing the bytes from read_bytes.
         #
@@ -125,7 +160,9 @@ def _load_photo_in_thread(path: Path, photographer: str) -> Photograph:
         photograph = Photograph(image, path, photographer, read_exif(path))
         elapsed_ms = (time.perf_counter() - start) * 1000
         logger.trace(
-            "loaded picture in {:.1f} ms (phash={})",
+            "loaded picture ({} of {}) in {:.1f} ms (phash={})",
+            next_finished(),
+            total,
             elapsed_ms,
             photograph.phash.tobytes().hex()
         )

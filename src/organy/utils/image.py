@@ -2,6 +2,8 @@
 
 import cv2
 
+import PIL
+
 from datetime import datetime, timedelta, timezone
 from numpy.typing import NDArray
 from pathlib import Path
@@ -18,9 +20,13 @@ def read_exif(path: Path) -> dict[str, Any]:
     are left out because they can be tens of kilobytes and each camera maker uses
     its own format for them. A photo without EXIF gives an empty dictionary.
     """
-    with Image.open(path) as image:
-        exif = image.getexif()
-        tags = {**exif, **exif.get_ifd(ExifTags.IFD.Exif)}
+    try:
+        with Image.open(path) as image:
+            exif = image.getexif()
+            tags = {**exif, **exif.get_ifd(ExifTags.IFD.Exif)}
+    except PIL.UnidentifiedImageError:
+        # Maybe the image is invalid, so we return an empty EXIF dictionary early
+        return {}
 
     return {
         ExifTags.TAGS.get(tag, str(tag)): value

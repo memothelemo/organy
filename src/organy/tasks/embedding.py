@@ -4,6 +4,7 @@ with more data and more accurate)
 """
 
 import cv2
+import itertools
 import threading
 import time
 import numpy as np
@@ -56,6 +57,13 @@ def compute_embeddings(
     # Each pool thread keeps its model here and builds it on its first photo.
     local = threading.local()
 
+    # Counts finished photos for the "(1 of 500)" progress in the log, the
+    # same way `load_photos` does, since photos finish out of order across
+    # threads.
+    total = len(photos)
+    finished = itertools.count(1)
+    lock = threading.Lock()
+
     def compute(photo: Photograph) -> NDArray[np.float32]:
         with logger.contextualize(thread_id=threading.get_native_id()):
             model: cv2.dnn.Net | None = getattr(local, "model", None)
@@ -69,7 +77,9 @@ def compute_embeddings(
             embedding = compute_photo_embedding(model, photo)
 
             elapsed_ms = (time.perf_counter() - start) * 1000
-            logger.trace("computed photo embedding in {:.1f} ms", elapsed_ms)
+            with lock: done = next(finished)
+
+            logger.trace("computed photo embedding ({} of {}) in {:.1f} ms", done, total, elapsed_ms)
             return embedding
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
