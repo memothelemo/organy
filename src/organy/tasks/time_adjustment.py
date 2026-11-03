@@ -3,15 +3,15 @@ Tasks related to correcting the camera clocks of every photographer, so photos
 from different cameras can be placed on one shared timeline.
 """
 
-import cv2
 import numpy as np
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from datetime import datetime, timedelta
 from loguru import logger
 from numpy.typing import NDArray
 
 from organy.models import Photograph
+from organy.tasks.matching import SceneMatcher
 
 
 # Lowest embedding similarity (see `compute_photo_embedding`) for two photos
@@ -24,27 +24,10 @@ MIN_PAIR_SIMILARITY = 0.8
 # most similar pairs are checked, since each check costs a few tens of ms.
 MAX_PAIRS_PER_PHOTOGRAPHERS = 20
 
-# ORB and matching settings used to confirm that two photos show the same scene:
-# - ORB_FEATURES: corners found in each downscaled photo
-# - MATCH_RATIO: Lowe's ratio test, a match is kept only when it is clearly
-#                better than the second best one
-# - RANSAC_THRESHOLD: how far (in pixels of the downscaled photo) a matched
-#                     corner may land from where the homography puts it
-# - MIN_INLIERS: matches that must agree with one homography for the pair
-#                to count as the same scene
-ORB_FEATURES = 1_000
-MATCH_RATIO = 0.75
-RANSAC_THRESHOLD = 5.0
-MIN_INLIERS = 20
-
 # Confirmed pairs that two photographers need before their clock offset is
 # trusted. A single pair could be two shots of the same spot at different
 # times, and the median of a few pairs leaves such outliers out.
 MIN_CONFIRMED_PAIRS = 3
-
-
-# Corners found by ORB in a photo, and their descriptors (None when no corner was found).
-Features = tuple[Sequence[cv2.KeyPoint], NDArray[np.uint8] | None]
 
 
 def estimate_camera_times(
@@ -83,7 +66,7 @@ def estimate_clock_offsets(photos: Mapping[Photograph, NDArray[np.float32]]) -> 
     time. Adding a photographer's offset to their camera times puts them on
     the reference clock, whose own offset is zero.
     - For each two photographers, their most similar photos (by embedding) are
-      paired, and each pair is confirmed with ORB matches and a RANSAC homography.
+      paired, and each pair is confirmed with ORB matches (see `SceneMatcher`).
     - The median time difference of the confirmed pairs is their clock offset.
     - Photographers are linked to the reference through the photographers they
       share the most confirmed pairs with.
@@ -99,17 +82,7 @@ def estimate_clock_offsets(photos: Mapping[Photograph, NDArray[np.float32]]) -> 
 
     if not by_photographer: return {}
 
-    # Each photo is decoded and run through ORB at most once, however many
-    # candidate pairs it is in.
-    features: dict[Photograph, Features] = {}
-    orb = cv2.ORB.create(nfeatures=ORB_FEATURES)
-    matcher = cv2.BFMatcher.create(cv2.NORM_HAMMING)
-
-    def features_of(photo: Photograph) -> Features:
-        if photo not in features:
-            gray = cv2.cvtColor(photo.decode_downscaled(), cv2.COLOR_BGR2GRAY)
-            features[photo] = orb.detectAndCompute(gray, None)
-        return features[photo]
+    matcher = SceneMatcher()
 
     # (a, b) -> (median of a's time minus b's time, number of confirmed pairs)
     links: dict[tuple[str, str], tuple[timedelta, int]] = {}
@@ -120,8 +93,7 @@ def estimate_clock_offsets(photos: Mapping[Photograph, NDArray[np.float32]]) -> 
 
             differences: list[float] = []
             for photo_a, photo_b in candidates:
-                inliers = _count_inliers(features_of(photo_a), features_of(photo_b), matcher)
-                if inliers < MIN_INLIERS: continue
+                if not matcher.is_same_scene(photo_a, photo_b): continue
 
                 time_a, time_b = _wall_clock(photo_a), _wall_clock(photo_b)
                 assert time_a is not None and time_b is not None
@@ -197,30 +169,6 @@ def _find_candidate_pairs(
     ]
     pairs.sort(reverse=True)
     return [(photos_a[i], photos_b[j]) for _, i, j in pairs[:MAX_PAIRS_PER_PHOTOGRAPHERS]]
-
-
-def _count_inliers(a: Features, b: Features, matcher: cv2.BFMatcher) -> int:
-    """
-    Counts the ORB matches between two photos that agree with one homography
-    found by RANSAC. It is 0 when there are too few matches to find one.
-    """
-    (keypoints_a, descriptors_a), (keypoints_b, descriptors_b) = a, b
-    if descriptors_a is None or descriptors_b is None: return 0
-
-    matches = [
-        pair[0]
-        for pair in matcher.knnMatch(descriptors_a, descriptors_b, k=2)
-        if len(pair) == 2 and pair[0].distance < MATCH_RATIO * pair[1].distance
-    ]
-
-    # A homography needs at least 4 matches, and fewer than MIN_INLIERS could
-    # never pass anyway.
-    if len(matches) < max(4, MIN_INLIERS): return 0
-
-    points_a = np.array([keypoints_a[m.queryIdx].pt for m in matches], dtype=np.float32)
-    points_b = np.array([keypoints_b[m.trainIdx].pt for m in matches], dtype=np.float32)
-    _, mask = cv2.findHomography(points_a, points_b, cv2.RANSAC, RANSAC_THRESHOLD)
-    return 0 if mask is None else int(np.count_nonzero(mask))
 
 
 def _wall_clock(photo: Photograph) -> datetime | None:

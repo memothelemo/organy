@@ -12,7 +12,10 @@ from numpy.typing import NDArray
 from pathlib import Path
 
 from organy.models import Photograph
-from organy.tasks import collect_photos, embedding, get_duplicated_photos, imports, time_adjustment
+from organy.tasks import (
+    collect_photos, embedding, events, faces, get_duplicated_photos, imports, selection, stacks, tagging,
+    time_adjustment,
+)
 
 
 def compute_embeddings(
@@ -50,6 +53,92 @@ def estimate_camera_times(
     timed = sum(1 for value in times.values() if value is not None)
     logger.info("estimated time of {} of {} photo(s) (took {:.1f} ms)", timed, len(times), elapsed_ms)
     return times
+
+
+
+def split_events(
+    times: Mapping[Photograph, datetime | None],
+    gap: timedelta = events.DEFAULT_EVENT_GAP,
+) -> tuple[list[list[Photograph]], list[Photograph]]:
+    """
+    Stage 4.4.: Splits the shared timeline into events wherever photos are
+    more than `gap` apart. Events are never merged automatically. Photos
+    without a time are returned apart; see `organy.tasks.events.split_events`.
+    """
+    found, untimed = events.split_events(times, gap)
+    logger.info("split {} photo(s) into {} event(s)", sum(len(event) for event in found), len(found))
+    if untimed:
+        logger.warning("{} photo(s) have no shared time and belong to no event", len(untimed))
+
+    return found, untimed
+
+def find_stacks(
+    photo_events: list[list[Photograph]],
+    embeddings: Mapping[Photograph, NDArray],
+    times: Mapping[Photograph, datetime | None] | None = None,
+    face_models: tuple[Path, Path] | None = None,
+) -> list[list[list[Photograph]]]:
+    """
+    Stage 4.5.: Groups the photos of each event into stacks of the same scene
+    or moment, and returns the stacks of each event in the same order. Stacks
+    never cross events, so a photo's event never changes.
+
+    `face_models` is the YuNet and SFace model files, used to stack close calls
+    showing the same person. Faces are not checked without them. See
+    `organy.tasks.stacks.find_stacks` for the rest.
+    """
+    start = time.perf_counter()
+    recognizer = None if face_models is None else faces.FaceRecognizer(*face_models)
+    found = [stacks.find_stacks(event, embeddings, times, recognizer) for event in photo_events]
+    elapsed_ms = (time.perf_counter() - start) * 1000
+
+    count = sum(len(event) for event in found)
+    stacked = sum(1 for event in found for stack in event if len(stack) > 1)
+    logger.info(
+        "found {} stack(s) in {} event(s), {} of them with more than one photo (took {:.1f} ms)",
+        count, len(photo_events), stacked, elapsed_ms,
+    )
+    return found
+
+
+def tag_photos(
+    embeddings: Mapping[Photograph, NDArray],
+    text_model_path: Path,
+    vocab_path: Path,
+    merges_path: Path,
+    tags: Mapping[str, str] = tagging.DEFAULT_TAGS,
+) -> dict[Photograph, list[tuple[str, float]]]:
+    """
+    Stage 4.6.: Tags every photo with what it shows, by comparing its
+    embedding with the embedding of each tag's prompt (`tags`, see
+    `organy.tasks.tagging.DEFAULT_TAGS`). The prompts are embedded once with
+    the CLIP text model and its tokenizer files ("vocab.json" and "merges.txt").
+    """
+    start = time.perf_counter()
+    tokenizer = tagging.ClipTokenizer(vocab_path, merges_path)
+    prompts = tagging.embed_prompts(tagging.load_text_model(text_model_path), tokenizer, tags)
+    tagged = tagging.tag_photos(embeddings, prompts)
+    elapsed_ms = (time.perf_counter() - start) * 1000
+
+    count = sum(1 for photo_tags in tagged.values() if photo_tags)
+    logger.info("tagged {} of {} photo(s) (took {:.1f} ms)", count, len(tagged), elapsed_ms)
+    return tagged
+
+
+def suggest_best_photos(
+    photo_stacks: Iterable[list[Photograph]],
+) -> list[tuple[Photograph, dict[Photograph, selection.PhotoQuality]]]:
+    """
+    Stage 4.7.: Suggests the best photo of every stack by sharpness and
+    exposure, along with every photo's raw measurements so the user can pick
+    another one. See `organy.tasks.selection.suggest_best_photo`.
+    """
+    start = time.perf_counter()
+    suggestions = [selection.suggest_best_photo(stack) for stack in photo_stacks]
+    elapsed_ms = (time.perf_counter() - start) * 1000
+
+    logger.info("suggested the best photo of {} stack(s) (took {:.1f} ms)", len(suggestions), elapsed_ms)
+    return suggestions
 
 
 def import_photos(sources: Iterable[Path]) -> dict[Path, str]:

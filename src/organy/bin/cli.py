@@ -8,12 +8,34 @@ import argparse
 import io
 import sys
 
+from collections.abc import Iterator, Mapping
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from loguru import logger
 from organy import pipeline
+from organy.models import Photograph
+from organy.tasks.events import DEFAULT_EVENT_GAP
+from organy.tasks.selection import PhotoQuality
 from organy.utils.os import get_recommended_workers
 from organy.utils.types import non_zero_uint
+
+
+# Model files Organy expects in the models folder (see `--models`), each
+# downloaded once:
+# - CLIP ViT-B/32, from the Xenova/clip-vit-base-patch32 repository on Hugging
+#   Face: "onnx/vision_model.onnx", "onnx/text_model.onnx", "vocab.json" and
+#   "merges.txt", renamed as below
+# - YuNet and SFace, from the OpenCV model zoo, keeping their names
+CLIP_VISION_MODEL = "clip-vit-base-patch32-vision.onnx"
+CLIP_TEXT_MODEL = "clip-vit-base-patch32-text.onnx"
+CLIP_VOCAB = "clip-vocab.json"
+CLIP_MERGES = "clip-merges.txt"
+FACE_DETECTOR_MODEL = "face_detection_yunet_2023mar.onnx"
+FACE_RECOGNIZER_MODEL = "face_recognition_sface_2021dec.onnx"
+
+FACE_MODEL_FILES = (FACE_DETECTOR_MODEL, FACE_RECOGNIZER_MODEL)
+MODEL_FILES = (CLIP_VISION_MODEL, CLIP_TEXT_MODEL, CLIP_VOCAB, CLIP_MERGES, *FACE_MODEL_FILES)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -27,6 +49,14 @@ def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     logger.debug("using organy with {} worker(s)", args.workers)
 
+    models: Path = args.models
+    missing = [name for name in MODEL_FILES if not (models / name).is_file()]
+    if args.no_faces:
+        missing = [name for name in missing if name not in FACE_MODEL_FILES]
+    if missing:
+        print(f"organy: missing model file(s) in {models}: {', '.join(missing)}", file=sys.stderr)
+        return 1
+
     try:
         imported = pipeline.import_photos(args.sources)
     except FileNotFoundError as error:
@@ -36,37 +66,23 @@ def main(argv: list[str] | None = None) -> int:
     photos = pipeline.load_photos(imported, workers=args.workers)
     photos, _ = pipeline.remove_duplicates(photos)
 
-    # TODO: Stage 4 (Fun part), as functions in `organy.pipeline`. Each step
-    # only suggests. The user must review everything at the end.
-    #
-    # [/] 1. Read each photo's capture time from EXIF (DateTimeOriginal, plus
-    #        SubSecTimeOriginal and OffsetTimeOriginal when present). Flag photos
-    #        without one instead of guessing.
-    # [/] 2. Compute an embedding for each photo: a fingerprint like phash, but
-    #        with more data and more accurate. It describes what the photo shows,
-    #        so two photos of the same scene get close embeddings even with
-    #        different colour grading or viewpoints. It comes from a downloaded
-    #        model (e.g. CLIP) run through `cv2.dnn`.
-    # [/] 3. Estimate each photographer's clock offset. Take the closest embedding
-    #        pairs between different photographers, confirm them with ORB matches
-    #        and a RANSAC homography, and use the median of their time
-    #        differences. Let the user correct it later.
-    # [ ] 4. Split the corrected timeline into events wherever there is a long gap
-    #        between photos. Never merge events automatically (rule 6).
-    # [ ] 5. Inside each event, group photos of the same scene or moment into
-    #        stacks by embedding similarity, with ORB matches to confirm close
-    #        calls. Faces add evidence: detect with `cv2.FaceDetectorYN` (YuNet)
-    #        and compare with `cv2.FaceRecognizerSF` (SFace). Stacks never change
-    #        a photo's event (rule 5).
-    # [ ] 6. Tag each photo by comparing its CLIP embedding with text prompts
-    #        ("stage", "group photo", "food", ...). The prompts are embedded once,
-    #        so tags cost almost nothing per photo. Use them for search and stack
-    #        names, not for grouping.
-    # [ ] 7. Inside each stack, suggest the best photo by sharpness (Laplacian variance)
-    #        and exposure. Show the raw values, never as "confidence".
-    embeddings = pipeline.compute_embeddings(photos, "models/clip-vit-base-patch32-vision.onnx")
-    times_per_photo = pipeline.estimate_camera_times(embeddings)
-    
+    # Stage 4: each step only suggests. The user reviews everything at the end.
+    embeddings = pipeline.compute_embeddings(photos, models / CLIP_VISION_MODEL)
+    times = pipeline.estimate_camera_times(embeddings)
+    events, untimed = pipeline.split_events(times, timedelta(minutes=args.event_gap))
+
+    # Photos without a shared time belong to no event, but similar ones among
+    # them are still worth stacking, so they are stacked as one group of their own.
+    groups = events + ([untimed] if untimed else [])
+    face_models = None if args.no_faces else (models / FACE_DETECTOR_MODEL, models / FACE_RECOGNIZER_MODEL)
+    stacks = pipeline.find_stacks(groups, embeddings, times, face_models)
+
+    tags = pipeline.tag_photos(
+        embeddings, models / CLIP_TEXT_MODEL, models / CLIP_VOCAB, models / CLIP_MERGES,
+    )
+    suggestions = pipeline.suggest_best_photos(stack for group in stacks for stack in group)
+
+    _print_report(stacks, len(events), times, tags, iter(suggestions))
     return 0
 
 
@@ -103,6 +119,24 @@ def _build_parser() -> argparse.ArgumentParser:
         help="photo files or folders to import",
     )
     parser.add_argument(
+        "-m",
+        "--models",
+        type=Path,
+        default=Path("models"),
+        help="folder holding the downloaded model files (default: models)",
+    )
+    parser.add_argument(
+        "--event-gap",
+        type=non_zero_uint,
+        default=int(DEFAULT_EVENT_GAP.total_seconds() // 60),
+        help="minutes without photos that start a new event (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--no-faces",
+        action="store_true",
+        help="do not compare faces when stacking photos",
+    )
+    parser.add_argument(
         "-w",
         "--workers",
         type=non_zero_uint,
@@ -110,3 +144,52 @@ def _build_parser() -> argparse.ArgumentParser:
         default=get_recommended_workers()
     )
     return parser
+
+
+def _print_report(
+    stacks: list[list[list[Photograph]]],
+    event_count: int,
+    times: Mapping[Photograph, datetime | None],
+    tags: Mapping[Photograph, list[tuple[str, float]]],
+    suggestions: Iterator[tuple[Photograph, dict[Photograph, PhotoQuality]]],
+) -> None:
+    """
+    Prints every event with its stacks for the user to review. The first
+    `event_count` groups in `stacks` are events, and a group after them holds
+    the photos without a shared time. `suggestions` gives the best photo of
+    each stack, in the same order as the stacks.
+
+    Similarities and measurements are printed as raw values. None of them is
+    a confidence.
+    """
+    print("* marks the suggested best photo of each stack.")
+
+    for number, group in enumerate(stacks, start=1):
+        print()
+        if number <= event_count:
+            group_times = [time for stack in group for photo in stack if (time := times.get(photo))]
+            print(
+                f"Event {number}: {_format_time(min(group_times))} to {_format_time(max(group_times))}, "
+                f"{sum(len(stack) for stack in group)} photo(s) in {len(group)} stack(s)"
+            )
+        else:
+            print(f"Photos without a shared time: {sum(len(stack) for stack in group)} in {len(group)} stack(s)")
+
+        for index, stack in enumerate(group, start=1):
+            best, qualities = next(suggestions)
+            print(f"  Stack {index}")
+            for photo in stack:
+                quality = qualities[photo]
+                photo_tags = ", ".join(f"{tag} {similarity:.3f}" for tag, similarity in tags.get(photo, []))
+                print(f"    {'*' if photo is best else ' '} {photo.path}")
+                print(f"        photographer {photo.photographer}, time {_format_time(times.get(photo))}")
+                print(
+                    f"        sharpness {quality.sharpness:.1f}, brightness {quality.brightness:.1f}, "
+                    f"highlights {quality.highlights:.4f}"
+                )
+                print(f"        tags {photo_tags or '(none)'}")
+
+
+def _format_time(time: datetime | None) -> str:
+    """Writes a time to the second, or "(unknown)" when there is none."""
+    return "(unknown)" if time is None else time.strftime("%Y-%m-%d %H:%M:%S")
