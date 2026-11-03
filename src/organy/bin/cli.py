@@ -14,7 +14,9 @@ from pathlib import Path
 from loguru import logger
 from organy import pipeline
 from organy.bin.results import ResultGroup, Results, ResultStack, print_report
+from organy.models import Photograph
 from organy.tasks.events import DEFAULT_EVENT_GAP
+from organy.utils.model_files import ModelLoadError
 from organy.utils.os import get_recommended_workers
 from organy.utils.types import non_zero_uint
 
@@ -34,6 +36,10 @@ FACE_RECOGNIZER_MODEL = "face_recognition_sface_2021dec.onnx"
 
 FACE_MODEL_FILES = (FACE_DETECTOR_MODEL, FACE_RECOGNIZER_MODEL)
 MODEL_FILES = (CLIP_VISION_MODEL, CLIP_TEXT_MODEL, CLIP_VOCAB, CLIP_MERGES, *FACE_MODEL_FILES)
+
+# How much larger the import dialog and the results window draw their text,
+# thumbnails and spacing, where 1.0 is Tk's normal size.
+WINDOW_SCALE = 1.25
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -62,7 +68,7 @@ def main(argv: list[str] | None = None) -> int:
             return 1
 
         from organy.bin.dialogs import ask_photo_sources
-        sources = ask_photo_sources()
+        sources = ask_photo_sources(WINDOW_SCALE)
         if not sources:
             logger.info("no photos selected, nothing to do")
             return 0
@@ -76,7 +82,32 @@ def main(argv: list[str] | None = None) -> int:
     photos = pipeline.load_photos(imported, workers=args.workers)
     photos, _ = pipeline.remove_duplicates(photos)
 
-    # Stage 4: each step only suggests. The user reviews everything at the end.
+    # Nothing to sort, so the models are not loaded at all.
+    if not photos:
+        print("organy: no JPEG or PNG photos could be loaded from the given sources", file=sys.stderr)
+        return 1
+
+    try:
+        results = _sort_photos(photos, models, args)
+    except ModelLoadError as error:
+        print(f"organy: {error}. Download it again.", file=sys.stderr)
+        return 1
+
+    if args.no_ui:
+        print_report(results)
+    else:
+        # Imported here so the window's modules only load when it is shown.
+        from organy.bin.results_window import show_results
+        show_results(results, WINDOW_SCALE)
+    return 0
+
+
+def _sort_photos(photos: list[Photograph], models: Path, args: argparse.Namespace) -> Results:
+    """
+    Runs stage 4 on the loaded photos and gathers what the user reviews.
+    Each step only suggests. It raises `ModelLoadError` when a model file is
+    damaged.
+    """
     embeddings = pipeline.compute_embeddings(photos, models / CLIP_VISION_MODEL)
     times = pipeline.estimate_camera_times(embeddings)
     events, untimed = pipeline.split_events(times, timedelta(minutes=args.event_gap))
@@ -92,7 +123,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     suggestions = iter(pipeline.suggest_best_photos(stack for group in stacks for stack in group))
 
-    results = Results(
+    return Results(
         groups=[
             ResultGroup(
                 stacks=[ResultStack(stack, *next(suggestions)) for stack in group],
@@ -103,14 +134,6 @@ def main(argv: list[str] | None = None) -> int:
         times=times,
         tags=tags,
     )
-
-    if args.no_ui:
-        print_report(results)
-    else:
-        # Imported here so the window's modules only load when it is shown.
-        from organy.bin.results_window import show_results
-        show_results(results)
-    return 0
 
 
 def run() -> int:

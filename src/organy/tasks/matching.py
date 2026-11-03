@@ -1,6 +1,6 @@
 """
 Tasks related to checking whether two photos show the same scene, by matching
-ORB corners between them.
+SIFT corners between them.
 """
 
 import cv2
@@ -13,21 +13,29 @@ from numpy.typing import NDArray
 from organy.models import Photograph
 
 
-# ORB and matching settings used to confirm that two photos show the same scene:
-# - ORB_FEATURES: corners found in each downscaled photo
+# SIFT and matching settings used to confirm that two photos show the same scene:
+# - SIFT_FEATURES: corners found in each downscaled photo
 # - MATCH_RATIO: Lowe's ratio test, a match is kept only when it is clearly
 #                better than the second best one
-# - RANSAC_THRESHOLD: how far (in pixels of the downscaled photo) a matched
-#                     corner may land from where the homography puts it
+# - HOMOGRAPHY_THRESHOLD: how far (in pixels of the downscaled photo) a matched
+#                         corner may land from where the homography puts it
 # - MIN_INLIERS: matches that must agree with one homography for the pair
 #                to count as the same scene
-ORB_FEATURES = 1_000
+#
+# On the 49 stock photos, against 31 known pairs of the same moment and 1,138
+# pairs of different scenes:
+# - ORB with RANSAC confirmed 0 real pairs and 7 wrong ones
+# - SIFT with RANSAC confirmed 8 real pairs and 1 wrong one
+# - SIFT with MAGSAC (used here) confirmed 5 real pairs and no wrong ones
+# - a fundamental matrix instead of a homography confirmed 88 or more wrong pairs
+SIFT_FEATURES = 1_000
 MATCH_RATIO = 0.75
-RANSAC_THRESHOLD = 5.0
+HOMOGRAPHY_THRESHOLD = 5.0
 MIN_INLIERS = 20
 
-# Size in pixels of the square ORB describes around each corner (OpenCV's default).
-ORB_PATCH_SIZE = 31
+# Smallest side, in pixels, of a photo worth looking for corners in. Smaller
+# photos have no room for SIFT's corner patches and give no useful matches.
+MIN_PHOTO_SIDE = 32
 
 # Smallest part of the photo that the agreeing matches must cover, from 0
 # to 1 (see `SceneMatcher.measure`). On the 49 stock photos, every photo
@@ -37,15 +45,15 @@ ORB_PATCH_SIZE = 31
 MIN_COVERAGE = 0.05
 
 
-# Corners found by ORB in a photo, their descriptors (None when no corner was
+# Corners found by SIFT in a photo, their descriptors (None when no corner was
 # found), and the photo's area in pixels.
-Features = tuple[Sequence[cv2.KeyPoint], NDArray[np.uint8] | None, int]
+Features = tuple[Sequence[cv2.KeyPoint], NDArray[np.float32] | None, int]
 
 
 class SceneMatcher:
     """
     Checks whether two photos show the same scene. Each photo is decoded and
-    run through ORB at most once, however many times it is compared.
+    run through SIFT at most once, however many times it is compared.
 
     It is not safe to use from several threads, so it must only be used on
     the thread that created it.
@@ -53,30 +61,28 @@ class SceneMatcher:
 
     def __init__(self) -> None:
         self._thread = threading.get_ident()
-        self._orb = cv2.ORB.create(nfeatures=ORB_FEATURES)
-        self._matcher = cv2.BFMatcher.create(cv2.NORM_HAMMING)
+        self._sift = cv2.SIFT.create(nfeatures=SIFT_FEATURES)
+        self._matcher = cv2.BFMatcher.create(cv2.NORM_L2)
         self._features: dict[Photograph, Features] = {}
 
     def features(self, photo: Photograph) -> Features:
-        """Finds the ORB corners of a photo's downscaled copy, or returns them from before."""
+        """Finds the SIFT corners of a photo's downscaled copy, or returns them from before."""
         assert threading.get_ident() == self._thread, "SceneMatcher used outside the thread that created it"
         if photo not in self._features:
             gray = cv2.cvtColor(photo.decode_downscaled(), cv2.COLOR_BGR2GRAY)
+            area = gray.shape[0] * gray.shape[1]
 
-            # ORB fails on photos smaller than its patch (OpenCV raises an
-            # assertion while building its image pyramid), and finds no corners
-            # in them anyway.
-            if min(gray.shape) < ORB_PATCH_SIZE:
-                self._features[photo] = ((), None, gray.shape[0] * gray.shape[1])
+            if min(gray.shape) < MIN_PHOTO_SIDE:
+                self._features[photo] = ((), None, area)
             else:
-                keypoints, descriptors = self._orb.detectAndCompute(gray, None)
-                self._features[photo] = (keypoints, descriptors, gray.shape[0] * gray.shape[1])
+                keypoints, descriptors = self._sift.detectAndCompute(gray, None)
+                self._features[photo] = (keypoints, descriptors, area)
         return self._features[photo]
 
     def measure(self, a: Photograph, b: Photograph) -> tuple[int, float]:
         """
-        Matches the ORB corners of two photos and returns:
-        - how many matches agree with one homography found by RANSAC
+        Matches the SIFT corners of two photos and returns:
+        - how many matches agree with one homography found by MAGSAC
         - how much of photo `a` those matches cover, from 0 to 1: the area of
           the box holding the middle 90% of them along each side, so a few
           stray matches far from the rest do not count
@@ -86,6 +92,9 @@ class SceneMatcher:
         keypoints_a, descriptors_a, area = self.features(a)
         keypoints_b, descriptors_b, _ = self.features(b)
         if descriptors_a is None or descriptors_b is None: return 0, 0.0
+
+        # knnMatch needs at least 2 corners in photo `b` to find a second best match.
+        if len(descriptors_b) < 2: return 0, 0.0
 
         matches = [
             pair[0]
@@ -99,9 +108,14 @@ class SceneMatcher:
 
         points_a = np.array([keypoints_a[m.queryIdx].pt for m in matches], dtype=np.float32)
         points_b = np.array([keypoints_b[m.trainIdx].pt for m in matches], dtype=np.float32)
+
         # When no homography fits, such as when every match lies on one line,
-        # OpenCV returns no homography and a mask of all zeros rather than None.
-        homography, mask = cv2.findHomography(points_a, points_b, cv2.RANSAC, RANSAC_THRESHOLD)
+        # OpenCV returns no homography and a mask of all zeros, or MAGSAC fails
+        # an internal check and raises.
+        try:
+            homography, mask = cv2.findHomography(points_a, points_b, cv2.USAC_MAGSAC, HOMOGRAPHY_THRESHOLD)
+        except cv2.error:
+            return 0, 0.0
         if homography is None or mask is None: return 0, 0.0
 
         inliers = points_a[mask.ravel() != 0]
@@ -113,7 +127,7 @@ class SceneMatcher:
 
     def is_same_scene(self, a: Photograph, b: Photograph) -> bool:
         """
-        Whether at least `MIN_INLIERS` ORB matches agree with one homography
+        Whether at least `MIN_INLIERS` SIFT matches agree with one homography
         and cover at least `MIN_COVERAGE` of the photo.
         """
         inliers, coverage = self.measure(a, b)

@@ -22,25 +22,25 @@ with your assumptions.
 
 1.  Use Python + OpenCV (`opencv-contrib-python`) for the entire project, especially in the vision pipeline.
 2.  Models must run locally after a one time download. No cloud APIs. No training or fine tuning of neural networks.
-3.  CPU is the default. Prefer discrete GPU, whenever possible, but do not fall back from CUDA to CPU silently.
+3.  Process everything on the CPU only. Do not add GPU code or options. OpenCV 5.0's DNN engine runs
+    Organy's models only on the CPU, and the CPU already stays well under three seconds per photo
+    (on 49 stock photos, every stage together took about 0.1 s per photo).
 4.  Assume all original photographs are read only. Never modify, rename, move or delete files in photo
     folders. Preserve its original filenames and photographer attribution.
 5.  Being in the same stack never changes a photo's event, so stacks are independent of events.
-6.  Do not merge events automatically. Let the user merge it manually. Visually similar groups from different
-    time sessions may stay separate.
-7.  Never label similarity, margin, sharpness or exposure values as "confidence" or "%".
-8.  Only support photographs in JPEG and PNG formats.
-9.  Both ASCII and non-ASCII paths must be supported, so it will be compatible for both Windows, MacOS
+6.  Never label similarity, margin, sharpness or exposure values as "confidence" or "%".
+7.  Only support photographs in JPEG and PNG formats.
+8.  Both ASCII and non-ASCII paths must be supported, so it will be compatible for both Windows, MacOS
     and Linux (in any distribution).
-10. Ask before adding any dependency. This applies especially to AGPL code (such as Ultralytics) and
+9.  Ask before adding any dependency. This applies especially to AGPL code (such as Ultralytics) and
     anything large.
-11. Organy must be treated both as a library and a binary. Keep all logic in library modules away from
+10. Organy must be treated both as a library and a binary. Keep all logic in library modules away from
     the binary modules (`src/organy` and `src/organy/bin` respectively). Keep `__init__.py` light
     so `organy --help` stays fast.
-12. Use OpenCV's class style names (e.g. `cv2.ORB.create()`) instead of the flat underscore aliases
+11. Use OpenCV's class style names (e.g. `cv2.ORB.create()`) instead of the flat underscore aliases
     (e.g. `cv2.ORB_create()`). The aliases come from the C++ bindings and Pylance cannot resolve
     them, so it reports errors in human's IDE.
-13. All code must pass Pylance without errors. It is strict about type resolution, so add type
+12. All code must pass Pylance without errors. It is strict about type resolution, so add type
     hints wherever it cannot infer a type on its own. Find ways on how to resolve type resolution
     errors.
 
@@ -69,8 +69,8 @@ the SHA1 hashes.
 ### Stage 2: Downscaling Imported Photographs
 
 Since computer memory is limited and photographs are mostly large in size, it is recommended to downscale
-all imported photographs; not an intended feature to decrease the quality, but to allow the model easily
-process each photograph if the user is running on a low powered discrete GPU.
+all imported photographs; not an intended feature to decrease the quality, but to allow the models to
+process each photograph quickly on the CPU.
 
 ### Stage 3: Separating Duplicate and/or Burst photographs
 

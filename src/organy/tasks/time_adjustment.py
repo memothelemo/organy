@@ -45,7 +45,8 @@ def estimate_camera_times(
 
     The times have no time zone, since they follow the reference camera's
     clock rather than a real one. A photo is None when it has no camera time
-    (see `Photograph.camera_time`), or when its photographer has no offset.
+    (see `Photograph.camera_time`), when its photographer has no offset, or
+    when the offset moves it outside the dates Python can hold.
     """
     if offsets is None:
         offsets = estimate_clock_offsets(photos)
@@ -54,7 +55,16 @@ def estimate_camera_times(
     for photo in photos:
         time = _wall_clock(photo)
         offset = offsets.get(photo.photographer)
-        times[photo] = None if time is None or offset is None else time + offset
+        if time is None or offset is None:
+            times[photo] = None
+            continue
+
+        # A camera whose clock was never set may write a date near year 1 or
+        # 9999, and moving it by the offset can go past what datetime holds.
+        try:
+            times[photo] = time + offset
+        except OverflowError:
+            times[photo] = None
 
     return times
 

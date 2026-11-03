@@ -15,6 +15,7 @@ from numpy.typing import NDArray
 from pathlib import Path
 
 from organy.models import Photograph
+from organy.utils.model_files import loading_model
 
 
 # CLIP was trained on 224x224 photos whose colours were shifted and scaled by
@@ -47,7 +48,8 @@ def compute_embeddings(
     # file is read once here and every worker builds its own model from these
     # bytes, which saves reading 350 MB from disk again for each worker.
     start = time.perf_counter()
-    model_bytes = read_embedding_model(model_path)
+    with loading_model(model_path):
+        model_bytes = read_embedding_model(model_path)
     logger.debug(
         "read embedding model ({:.0f} MB) in {:.1f} ms",
         model_bytes.nbytes / 1_000_000,
@@ -69,7 +71,8 @@ def compute_embeddings(
             model: cv2.dnn.Net | None = getattr(local, "model", None)
             if model is None:
                 start = time.perf_counter()
-                model = local.model = load_embedding_model(model_bytes)
+                with loading_model(model_path):
+                    model = local.model = load_embedding_model(model_bytes)
                 elapsed_ms = (time.perf_counter() - start) * 1000
                 logger.debug("loaded embedding model in {:.1f} ms", elapsed_ms)
 

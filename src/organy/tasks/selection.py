@@ -12,6 +12,17 @@ from typing import NamedTuple
 from organy.models import Photograph
 
 
+# Sharpness is how steep the strongest edges are: the gradient that only this
+# share of pixels exceeds (as a percentile, 99.5 means the top 0.5%). Blur
+# flattens the strongest edges, while noise barely changes them once a
+# median filter has removed it.
+#
+# On the 49 stock photos, each original was compared with damaged copies of
+# itself. The original measured sharper than every blurred copy and every
+# heavily compressed copy, and than a noisy copy in 98 to 100% of photos.
+# The variance of the Laplacian, used before, picked the noisy copy every time.
+SHARPNESS_PERCENTILE = 99.5
+
 # Pixel brightness (0 to 255) from which a pixel counts as blown out, too
 # bright for any detail to be left in it.
 HIGHLIGHT_LEVEL = 250
@@ -32,8 +43,9 @@ class PhotoQuality(NamedTuple):
     """
 
     """
-    Variance of the Laplacian of the grey photo: higher when edges are
-    crisper. Blur and camera shake lower it, while noise raises it.
+    How steep the strongest edges of the grey photo are (see
+    `SHARPNESS_PERCENTILE`): higher when edges are crisper. Blur and camera
+    shake lower it, and noise barely changes it.
     """
     sharpness: float
 
@@ -51,11 +63,14 @@ def measure_quality(photo: Photograph) -> PhotoQuality:
     """
     gray = cv2.cvtColor(photo.decode_downscaled(), cv2.COLOR_BGR2GRAY)
 
-    # CV_64F keeps the negative side of each edge, which 8-bit output would clip.
-    laplacian = cv2.Laplacian(gray, cv2.CV_64F)
+    # The median filter removes pixel noise but keeps edges, so noise cannot
+    # pass for detail. CV_32F keeps the negative side of each edge, which
+    # 8-bit output would clip.
+    smooth = cv2.medianBlur(gray, 3)
+    gradient = cv2.magnitude(cv2.Sobel(smooth, cv2.CV_32F, 1, 0), cv2.Sobel(smooth, cv2.CV_32F, 0, 1))
 
     return PhotoQuality(
-        sharpness=float(laplacian.var()),
+        sharpness=float(np.percentile(gradient, SHARPNESS_PERCENTILE)),
         brightness=float(gray.mean()),
         highlights=float(np.count_nonzero(gray >= HIGHLIGHT_LEVEL)) / gray.size,
     )

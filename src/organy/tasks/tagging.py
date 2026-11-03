@@ -8,43 +8,99 @@ import json
 import numpy as np
 import re
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from functools import cache
 from numpy.typing import NDArray
 from pathlib import Path
 
 from organy.models import Photograph
+from organy.utils.model_files import loading_model
 from organy.utils.os import read_bytes
 
 
-# Tags given by default, each with the prompt that describes it to CLIP.
-# Full sentences in the form "a photo of ..." work better than single words,
-# since CLIP learnt from captions written that way.
-DEFAULT_TAGS = {
-    "stage": "a photo of a performance on a stage",
-    "group photo": "a photo of a group of people posing together",
-    "portrait": "a close-up portrait photo of a person",
-    "crowd": "a photo of a crowd of people",
-    "food": "a photo of food",
-    "venue": "a photo of the inside of a building",
-    "outdoors": "a photo taken outdoors",
-    "instrument": "a photo of a musical instrument",
-    "sign": "a photo of a sign with text",
-    "product": "a photo of a product on display",
+# Tags given by default, each with the prompts that describe it to CLIP. Full
+# sentences in the form "a photo of ..." work better than single words, since
+# CLIP learnt from captions written that way. A tag scores by its closest
+# prompt, so several prompts cover the different ways it can look, such as
+# the different instruments under "instrument".
+DEFAULT_TAGS: dict[str, tuple[str, ...]] = {
+    "stage": (
+        "a photo of a performance on a stage",
+        "a photo of a musician performing live",
+        "a photo of a concert",
+    ),
+    "group photo": (
+        "a photo of a group of people posing together",
+        "a group photo of people smiling at the camera",
+        "a photo of friends posing for a picture",
+    ),
+    "portrait": (
+        "a close-up portrait photo of a person",
+        "a headshot of a person",
+        "a close-up photo of a person's face",
+    ),
+    "crowd": (
+        "a photo of a crowd of people",
+        "a photo of an audience watching a show",
+        "a photo of many people in a crowd",
+    ),
+    "food": (
+        "a photo of food",
+        "a photo of a meal on a plate",
+        "a photo of drinks and snacks",
+    ),
+    "venue": (
+        "a photo of the inside of a building",
+        "a wide photo of a large hall",
+        "a photo of an empty room",
+    ),
+    "outdoors": (
+        "a photo taken outdoors",
+        "a photo of people outside under the sky",
+        "a photo with trees and sky in the background",
+    ),
+    "instrument": (
+        "a photo of a musical instrument",
+        "a photo of a person playing a guitar",
+        "a photo of a person playing a keyboard",
+        "a photo of a drum kit",
+        "a photo of a person playing a violin",
+        "a photo of a person playing a saxophone",
+    ),
+    "sign": (
+        "a photo of a sign with text",
+        "a photo of a banner with a logo",
+        "a photo of a large printed sign",
+    ),
+    "product": (
+        "a photo of a product on display",
+        "a photo of items for sale at a booth",
+        "a photo of products on a shelf",
+    ),
 }
 
-# Rules for keeping a photo's tags, by the similarity of its embedding with
-# each tag's prompt embedding (see `tag_photos`):
-# - MIN_TAG_SIMILARITY: lowest similarity of the best tag for the photo to be
-#   tagged at all. CLIP image-to-text similarities are much lower than
-#   image-to-image ones, about 0.15 to 0.35.
-# - TAG_MARGIN: other tags are kept if they are at most this far below the
-#   best tag.
-# - MAX_TAGS: most tags kept for one photo.
+# Plain captions that fit any photo. A photo's similarity with them is its
+# starting point: some photos are close to every prompt, others to none, so a
+# tag is judged by how much closer it is than these captions.
+NEUTRAL_PROMPTS = ("a photo", "a photo of something", "a picture")
+
+# Rules for keeping a photo's tags (see `tag_photos`):
+# - MIN_TAG_GAIN: how much closer than the neutral captions a tag must be
+# - MAX_TAGS: most tags kept for one photo
 #
-# These numbers still need checking against real event photos.
-MIN_TAG_SIMILARITY = 0.2
-TAG_MARGIN = 0.015
+# Each tag is judged on its own, so a photo can have several tags even when
+# one of them, such as "stage", is much closer than the rest.
+#
+# On the 49 stock photos, against hand-picked tags, counting only tags that
+# were clearly right or wrong:
+# - the rule used before (one prompt per tag, keeping tags within 0.015 of
+#   the best one) gave right tags 100% of the time but found only 61% of them
+# - this rule found 84% of them, and 92% of the tags it gave were right
+# - a gain of 0.02 or 0.03 also kept both above 80%
+#
+# It was chosen on those same photos, so it still needs checking against
+# real event photos.
+MIN_TAG_GAIN = 0.025
 MAX_TAGS = 3
 
 # CLIP reads at most 77 tokens, including the start and end tokens.
@@ -67,10 +123,12 @@ class ClipTokenizer:
     """
 
     def __init__(self, vocab_path: Path, merges_path: Path) -> None:
-        self._vocab: dict[str, int] = json.loads(vocab_path.read_text(encoding="utf-8"))
+        with loading_model(vocab_path):
+            self._vocab: dict[str, int] = json.loads(vocab_path.read_text(encoding="utf-8"))
 
         # The first line of merges.txt is a version header, not a merge.
-        lines = merges_path.read_text(encoding="utf-8").splitlines()[1:]
+        with loading_model(merges_path):
+            lines = merges_path.read_text(encoding="utf-8").splitlines()[1:]
         merges = [tuple(line.split()) for line in lines if line.strip()]
         self._ranks: dict[tuple[str, ...], int] = {pair: rank for rank, pair in enumerate(merges)}
 
@@ -137,64 +195,76 @@ def load_text_model(path: Path) -> cv2.dnn.Net:
     It runs on the CPU.
     """
     # Read by Python for non-ASCII paths on Windows, see `read_bytes`.
-    return cv2.dnn.readNetFromONNX(read_bytes(path))
+    with loading_model(path):
+        return cv2.dnn.readNetFromONNX(read_bytes(path))
+
+
+def embed_texts(model: cv2.dnn.Net, tokenizer: ClipTokenizer, texts: Sequence[str]) -> NDArray[np.float32]:
+    """
+    Computes the embedding of every text in `texts` and returns them as a
+    table, one row per text. Each row is scaled to a length of 1, like photo
+    embeddings, so a photo's similarity with a text is `photo @ row`.
+
+    Each text takes about 20 ms, and only has to be embedded once for all photos.
+    """
+    rows: list[NDArray[np.float32]] = []
+    for text in texts:
+        model.setInput(tokenizer.encode(text), "input_ids")
+        embedding = np.asarray(model.forward(), dtype=np.float32).ravel()
+        rows.append(embedding / np.linalg.norm(embedding))
+
+    return np.vstack(rows) if rows else np.empty((0, 0), dtype=np.float32)
 
 
 def embed_prompts(
     model: cv2.dnn.Net,
     tokenizer: ClipTokenizer,
-    prompts: Mapping[str, str],
+    prompts: Mapping[str, Sequence[str]],
 ) -> dict[str, NDArray[np.float32]]:
     """
-    Computes the embedding of every prompt in `prompts` (each tag with its
-    prompt, like `DEFAULT_TAGS`) and returns them by tag. Each embedding is
-    scaled to a length of 1, like photo embeddings, so a photo's similarity
-    with a prompt is `photo @ prompt`.
-
-    Each prompt takes about 20 ms, and only has to be embedded once for all photos.
+    Computes the embeddings of every tag's prompts in `prompts` (each tag with
+    its prompts, like `DEFAULT_TAGS`) and returns them by tag, as tables from
+    `embed_texts`. A tag without prompts is left out.
     """
-    embeddings: dict[str, NDArray[np.float32]] = {}
-    for tag, prompt in prompts.items():
-        model.setInput(tokenizer.encode(prompt), "input_ids")
-        embedding = np.asarray(model.forward(), dtype=np.float32).ravel()
-        embeddings[tag] = embedding / np.linalg.norm(embedding)
-
-    return embeddings
+    return {tag: embed_texts(model, tokenizer, texts) for tag, texts in prompts.items() if texts}
 
 
 def tag_photos(
     photos: Mapping[Photograph, NDArray[np.float32]],
     prompts: Mapping[str, NDArray[np.float32]],
+    neutral: NDArray[np.float32],
 ) -> dict[Photograph, list[tuple[str, float]]]:
     """
     Tags every photo in `photos` (each photo with its embedding, as
-    `compute_embeddings` returns) with the tags in `prompts` (each tag with
-    its prompt embedding, as `embed_prompts` returns) whose prompt is closest
-    to the photo.
+    `compute_embeddings` returns) with what it shows.
 
-    Each photo gets its tags with their similarity, most similar first:
-    - the best tag, when its similarity is at least `MIN_TAG_SIMILARITY`
-    - other tags at most `TAG_MARGIN` below the best one, up to `MAX_TAGS`
+    `prompts` holds each tag's prompt embeddings (as `embed_prompts` returns),
+    and `neutral` the embeddings of `NEUTRAL_PROMPTS` (as `embed_texts`
+    returns). For each photo and tag:
+    - the tag's similarity is the one of its closest prompt
+    - its gain is how much higher that is than the photo's average similarity
+      with the neutral captions
+    - the tag is kept when its gain is at least `MIN_TAG_GAIN`
 
-    A photo that is not close enough to any prompt gets no tags. Tags are
-    meant for searching and naming stacks, not for grouping photos.
+    Each photo gets up to `MAX_TAGS` tags with their gains, highest first. A
+    photo that no tag fits well enough gets no tags. Gains are raw values
+    for comparing tags, not confidences. Tags are meant for searching and
+    naming stacks, not for grouping photos.
     """
-    if not photos or not prompts: return {photo: [] for photo in photos}
+    if not photos or not prompts or len(neutral) == 0: return {photo: [] for photo in photos}
 
     tags = list(prompts)
+    table = np.vstack(list(photos.values()))
 
-    # One row per photo and one column per tag.
-    similarity = np.vstack(list(photos.values())) @ np.vstack([prompts[tag] for tag in tags]).T
+    # One row per photo and one column per tag, holding each tag's closest
+    # prompt, minus the photo's average similarity with the neutral captions.
+    similarity = np.stack([(table @ prompts[tag].T).max(axis=1) for tag in tags], axis=1)
+    gains = similarity - (table @ neutral.T).mean(axis=1, keepdims=True)
 
     tagged: dict[Photograph, list[tuple[str, float]]] = {}
-    for photo, row in zip(photos, similarity):
-        best = float(row.max())
+    for photo, row in zip(photos, gains):
         order = np.argsort(-row)[:MAX_TAGS]
-        tagged[photo] = [
-            (tags[index], float(row[index]))
-            for index in order
-            if best >= MIN_TAG_SIMILARITY and row[index] >= best - TAG_MARGIN
-        ]
+        tagged[photo] = [(tags[index], float(row[index])) for index in order if row[index] >= MIN_TAG_GAIN]
 
     return tagged
 

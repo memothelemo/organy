@@ -47,7 +47,10 @@ class Results:
         """Names a group, such as "Event 2: 2015-01-23 19:46:34 to 19:49:22"."""
         if not group.is_event: return "Photos without a shared time"
 
-        number = sum(1 for other in self.groups[:self.groups.index(group)] if other.is_event) + 1
+        # Groups are found by identity, since comparing them would compare every
+        # photo and measurement inside them.
+        position = next(index for index, other in enumerate(self.groups) if other is group)
+        number = sum(1 for other in self.groups[:position] if other.is_event) + 1
         times = [time for stack in group.stacks for photo in stack.photos if (time := self.times.get(photo))]
         start, end = min(times), max(times)
 
@@ -56,8 +59,8 @@ class Results:
         return f"Event {number}: {format_time(start)} to {end_text}"
 
     def tags_text(self, photo: Photograph) -> str:
-        """A photo's tags with their similarity values, such as "stage 0.251, instrument 0.240"."""
-        return ", ".join(f"{tag} {similarity:.3f}" for tag, similarity in self.tags.get(photo, [])) or "(none)"
+        """A photo's tags with their gains (see `organy.tasks.tagging.tag_photos`), such as "stage 0.061, instrument 0.034"."""
+        return ", ".join(f"{tag} {gain:.3f}" for tag, gain in self.tags.get(photo, [])) or "(none)"
 
 
 def format_time(time: datetime | None) -> str:

@@ -142,10 +142,18 @@ def _load_photo_in_thread(
         """Decodes one photograph per path"""
         start = time.perf_counter()
 
+        # A file that cannot be read (such as one without read permission, or
+        # one removed since it was found) is skipped like one that cannot be decoded.
+        try:
+            data = read_bytes(path)
+        except OSError as error:
+            logger.warning("skipped picture ({} of {}), cannot read {}: {}", next_finished(), total, path, error)
+            return None
+
         # imdecode returns None for data it cannot decode, but raises for an
         # empty file, so both count as a failed photo.
         try:
-            image = cv2.imdecode(read_bytes(path), cv2.IMREAD_COLOR_BGR)
+            image = cv2.imdecode(data, cv2.IMREAD_COLOR_BGR)
         except cv2.error:
             image = None
 

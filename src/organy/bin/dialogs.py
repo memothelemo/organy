@@ -7,10 +7,15 @@ confirming. tkinter is imported inside the functions so the CLI starts fast and
 still works without a display when paths are given on the command line.
 """
 
+import math
 import sys
 
 from collections.abc import Iterable
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import tkinter as tk
 
 
 # Tk matches patterns case-sensitively on Linux, so list both cases.
@@ -47,11 +52,30 @@ def enable_hidpi() -> None:
         ctypes.windll.user32.SetProcessDPIAware()  # older Windows
 
 
-def ask_photo_sources() -> list[Path]:
+def apply_window_scale(root: "tk.Tk", scale: float) -> None:
+    """
+    Makes every font of a Tk window `scale` times larger, where 1.0 keeps
+    Tk's normal size. It must run before the window's widgets are created.
+
+    Only fonts are changed here. Sizes a window gives in pixels, such as
+    padding or thumbnail sizes, must be multiplied by `scale` where they are set.
+    """
+    from tkinter import font
+
+    # Tk keeps sizes in points when positive and in pixels when negative, so
+    # the sign is kept and only the amount grows.
+    for name in font.names(root):
+        named = font.nametofont(name, root)
+        size = int(named.cget("size"))
+        named.configure(size=int(math.copysign(math.floor(abs(size) * scale + 0.5), size)))
+
+
+def ask_photo_sources(scale: float = 1.0) -> list[Path]:
     """
     Shows the selection window and returns the chosen files and folders.
     Each folder's name becomes the photographer of the photos in it, unless
-    a photo names its photographer in its EXIF.
+    a photo names its photographer in its EXIF. `scale` enlarges the window
+    (see `apply_window_scale`).
 
     It returns an empty list when the user cancels or closes the window.
     """
@@ -65,16 +89,21 @@ def ask_photo_sources() -> list[Path]:
 
     root = tk.Tk()
     root.title("Organy - Select photos")
-    root.minsize(520, 300)
+    apply_window_scale(root, scale)
+    root.minsize(round(520 * scale), round(300 * scale))
+
+    # Spacing in pixels, enlarged like the fonts.
+    space = round(8 * scale)
+    small_space = round(4 * scale)
 
     ttk.Label(
         root,
         text="Add each photographer's folder, or single photos. A folder's name is used as its photographer.",
-        wraplength=600,
-    ).pack(fill="x", padx=8, pady=(8, 0))
+        wraplength=round(600 * scale),
+    ).pack(fill="x", padx=space, pady=(space, 0))
 
     listbox = tk.Listbox(root, width=80, height=12, selectmode="extended")
-    listbox.pack(fill="both", expand=True, padx=8, pady=8)
+    listbox.pack(fill="both", expand=True, padx=space, pady=space)
 
     # Iterable, not list: askopenfilenames returns a tuple, or "" when cancelled.
     def add(paths: Iterable[str]) -> None:
@@ -109,13 +138,13 @@ def ask_photo_sources() -> list[Path]:
         root.destroy()
 
     buttons = ttk.Frame(root)
-    buttons.pack(fill="x", padx=8, pady=(0, 8))
+    buttons.pack(fill="x", padx=space, pady=(0, space))
     ttk.Button(buttons, text="Add folder...", command=add_folder).pack(side="left")
-    ttk.Button(buttons, text="Add files...", command=add_files).pack(side="left", padx=4)
+    ttk.Button(buttons, text="Add files...", command=add_files).pack(side="left", padx=small_space)
     ttk.Button(buttons, text="Remove", command=remove_selected).pack(side="left")
     ttk.Button(buttons, text="Cancel", command=root.destroy).pack(side="right")
     import_button = ttk.Button(buttons, text="Import", command=confirm)
-    import_button.pack(side="right", padx=4)
+    import_button.pack(side="right", padx=small_space)
     import_button.state(["disabled"])
 
     root.mainloop()

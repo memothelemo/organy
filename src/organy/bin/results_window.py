@@ -13,7 +13,7 @@ import tkinter as tk
 
 from tkinter import font, ttk
 
-from organy.bin.dialogs import enable_hidpi
+from organy.bin.dialogs import apply_window_scale, enable_hidpi
 from organy.bin.results import ResultGroup, Results, format_quality, format_time
 from organy.models import Photograph
 from organy.tasks.selection import PhotoQuality
@@ -28,18 +28,16 @@ PREVIEW_SIZE = 900
 # Layout of the cards, in pixels:
 # - CARD_PADDING: space between a card's border and its contents
 # - GAP: space between cards, and around all of them
-# - CARD_WIDTH: room taken by one card, including the gap after it
 CARD_PADDING = 8
 GAP = 8
-CARD_WIDTH = THUMBNAIL_SIZE + 2 * CARD_PADDING + GAP
 
 # Thumbnails made in one go before the window gets to redraw and respond
 # again, so scrolling fills them in gradually instead of freezing the window.
 THUMBNAILS_PER_TICK = 8
 
-# Thumbnails are made this far (in pixels) above and below the visible part,
-# so they are usually ready before the user scrolls to them.
-FILL_MARGIN = 2 * THUMBNAIL_SIZE
+# List width and window size, in pixels.
+LIST_WIDTH = 440
+WINDOW_SIZE = (1280, 800)
 
 # Colours of the card borders, and of a thumbnail's place until it is made.
 BEST_COLOR = "#2e9d4f"
@@ -47,14 +45,20 @@ BORDER_COLOR = "#c4c4c4"
 PLACEHOLDER_COLOR = "#e4e4e4"
 
 
-def show_results(results: Results) -> None:
-    """Opens the results window and returns once the user closes it."""
+def show_results(results: Results, scale: float = 1.0) -> None:
+    """
+    Opens the results window and returns once the user closes it. `scale`
+    enlarges its text, thumbnails and spacing (see `apply_window_scale`).
+    """
     enable_hidpi()
 
     root = tk.Tk()
     root.title("Organy - Results")
-    root.geometry("1280x800")
-    ResultsWindow(root, results)
+    apply_window_scale(root, scale)
+
+    width, height = WINDOW_SIZE
+    root.geometry(f"{round(width * scale)}x{round(height * scale)}")
+    ResultsWindow(root, results, scale)
     root.mainloop()
 
 
@@ -85,8 +89,23 @@ class ResultsWindow:
     chosen group's thumbnails are kept, so even thousands of photos stay light.
     """
 
-    def __init__(self, root: tk.Tk, results: Results) -> None:
+    def __init__(self, root: tk.Tk, results: Results, scale: float = 1.0) -> None:
         self._root = root
+
+        # Every size in pixels is enlarged by `scale`, like the fonts (see
+        # `apply_window_scale`).
+        self._thumbnail_size = round(THUMBNAIL_SIZE * scale)
+        self._preview_size = round(PREVIEW_SIZE * scale)
+        self._card_padding = round(CARD_PADDING * scale)
+        self._gap = round(GAP * scale)
+
+        # Room taken by one card, including the gap after it.
+        self._card_width = self._thumbnail_size + 2 * self._card_padding + self._gap
+
+        # Thumbnails are made this far above and below the visible part, so
+        # they are usually ready before the user scrolls to them.
+        self._fill_margin = 2 * self._thumbnail_size
+
         self._results = results
         self._group: ResultGroup | None = None
         self._columns = 0
@@ -124,7 +143,7 @@ class ResultsWindow:
         # Left: every group, one per row. The list keeps its width when the
         # window is resized, and the thumbnails take the rest.
         self._tree = ttk.Treeview(paned, show="tree", selectmode="browse")
-        self._tree.column("#0", width=440, minwidth=200)
+        self._tree.column("#0", width=round(LIST_WIDTH * scale), minwidth=round(200 * scale))
         for index, group in enumerate(results.groups):
             text = f"{results.title(group)}  ({group.photo_count} photos, {len(group.stacks)} stacks)"
             self._tree.insert("", "end", iid=str(index), text=text)
@@ -135,7 +154,7 @@ class ResultsWindow:
         right = ttk.Frame(paned)
         paned.add(right, weight=1)
 
-        self._heading = ttk.Label(right, font=self._heading_font, padding=(10, 8))
+        self._heading = ttk.Label(right, font=self._heading_font, padding=(round(10 * scale), round(8 * scale)))
         self._heading.pack(fill="x")
 
         self._canvas = tk.Canvas(
@@ -177,7 +196,7 @@ class ResultsWindow:
 
     def _on_resize(self, event: tk.Event) -> None:
         # Cards are laid out again only when a different number fits per row.
-        columns = max(1, (event.width - GAP) // CARD_WIDTH)
+        columns = max(1, (event.width - self._gap) // self._card_width)
         if columns != self._columns:
             self._columns = columns
             self._render()
@@ -201,18 +220,18 @@ class ResultsWindow:
         )
 
         columns = max(1, self._columns)
-        y = GAP
+        y = self._gap
         for number, stack in enumerate(group.stacks, start=1):
             header = self._canvas.create_text(
-                GAP, y + GAP, text=f"Stack {number}: {len(stack.photos)} photo(s)",
+                self._gap, y + self._gap, text=f"Stack {number}: {len(stack.photos)} photo(s)",
                 anchor="nw", font=self._stack_font, fill=self._text_color,
             )
-            y = self._bottom(header) + GAP
+            y = self._bottom(header) + self._gap
 
             for start in range(0, len(stack.photos), columns):
                 row = stack.photos[start:start + columns]
                 cards = [
-                    self._draw_card(GAP + column * CARD_WIDTH, y, photo, stack.qualities[photo], photo is stack.best)
+                    self._draw_card(self._gap + column * self._card_width, y, photo, stack.qualities[photo], photo is stack.best)
                     for column, photo in enumerate(row)
                 ]
 
@@ -221,9 +240,9 @@ class ResultsWindow:
                 for border, _ in cards:
                     x0, y0, x1, _ = self._canvas.coords(border)
                     self._canvas.coords(border, x0, y0, x1, row_bottom)
-                y = row_bottom + GAP
+                y = row_bottom + self._gap
 
-        self._canvas.configure(scrollregion=(0, 0, GAP + columns * CARD_WIDTH, y + GAP))
+        self._canvas.configure(scrollregion=(0, 0, self._gap + columns * self._card_width, y + self._gap))
         self._canvas.yview_moveto(0)
         self._schedule_fill()
 
@@ -235,17 +254,17 @@ class ResultsWindow:
         its thumbnail, its details, and a border, green when it is the
         suggested best photo. It returns the border and the card's bottom.
         """
-        left = x + CARD_PADDING
-        top = y + CARD_PADDING
+        left = x + self._card_padding
+        top = y + self._card_padding
 
         # Each card gets its own tag, so a click anywhere on its thumbnail opens the preview.
         tag = f"card-{id(photo)}"
         placeholder = self._canvas.create_rectangle(
-            left, top, left + THUMBNAIL_SIZE, top + THUMBNAIL_SIZE,
+            left, top, left + self._thumbnail_size, top + self._thumbnail_size,
             fill=PLACEHOLDER_COLOR, outline="", tags=(tag,),
         )
         image = self._canvas.create_image(
-            left + THUMBNAIL_SIZE // 2, top + THUMBNAIL_SIZE // 2, anchor="center", tags=(tag,),
+            left + self._thumbnail_size // 2, top + self._thumbnail_size // 2, anchor="center", tags=(tag,),
         )
         self._pending[placeholder] = (image, photo)
 
@@ -261,17 +280,17 @@ class ResultsWindow:
             (format_quality(quality), self._font, self._text_color),
             (f"tags {self._results.tags_text(photo)}", self._font, self._text_color),
         ]
-        text_y = top + THUMBNAIL_SIZE + CARD_PADDING
+        text_y = top + self._thumbnail_size + self._card_padding
         for text, text_font, color in lines:
             if not text: continue
             item = self._canvas.create_text(
-                left, text_y, text=text, anchor="nw", width=THUMBNAIL_SIZE, font=text_font, fill=color,
+                left, text_y, text=text, anchor="nw", width=self._thumbnail_size, font=text_font, fill=color,
             )
             text_y = self._bottom(item) + 2
 
-        bottom = text_y + CARD_PADDING
+        bottom = text_y + self._card_padding
         border = self._canvas.create_rectangle(
-            x, y, x + THUMBNAIL_SIZE + 2 * CARD_PADDING, bottom,
+            x, y, x + self._thumbnail_size + 2 * self._card_padding, bottom,
             outline=BEST_COLOR if best else BORDER_COLOR, width=3,
         )
         return border, bottom
@@ -290,8 +309,8 @@ class ResultsWindow:
         self._fill_scheduled = False
         if not self._pending: return
 
-        top = self._canvas.canvasy(0) - FILL_MARGIN
-        bottom = self._canvas.canvasy(self._canvas.winfo_height()) + FILL_MARGIN
+        top = self._canvas.canvasy(0) - self._fill_margin
+        bottom = self._canvas.canvasy(self._canvas.winfo_height()) + self._fill_margin
         nearby = [
             item for item in self._canvas.find_overlapping(0, top, self._canvas.winfo_width(), bottom)
             if item in self._pending
@@ -300,7 +319,7 @@ class ResultsWindow:
         for placeholder in nearby[:THUMBNAILS_PER_TICK]:
             image, photo = self._pending.pop(placeholder)
             if photo not in self._thumbnails:
-                self._thumbnails[photo] = make_photo_image(photo, THUMBNAIL_SIZE)
+                self._thumbnails[photo] = make_photo_image(photo, self._thumbnail_size)
             self._canvas.itemconfigure(image, image=self._thumbnails[photo])
 
         if len(nearby) > THUMBNAILS_PER_TICK: self._schedule_fill()
@@ -310,9 +329,9 @@ class ResultsWindow:
         window = tk.Toplevel(self._root)
         window.title(f"Organy - {photo.path.name}")
 
-        self._preview_image = make_photo_image(photo, PREVIEW_SIZE)
+        self._preview_image = make_photo_image(photo, self._preview_size)
         ttk.Label(window, image=self._preview_image).pack()
         ttk.Label(
             window, text=f"{photo.path}\n{photo.photographer}, {format_time(self._results.times.get(photo))}",
-            padding=8,
+            padding=self._card_padding,
         ).pack(anchor="w")

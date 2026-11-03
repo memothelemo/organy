@@ -10,6 +10,7 @@ import threading
 from numpy.typing import NDArray
 from pathlib import Path
 
+from organy.utils.model_files import loading_model
 from organy.utils.os import read_bytes
 
 
@@ -44,12 +45,14 @@ class FaceRecognizer:
 
         # Both models are read by Python for non-ASCII paths on Windows, see `read_bytes`.
         empty = np.empty(0, dtype=np.uint8)
-        self._detector = cv2.FaceDetectorYN.create(
-            "onnx", read_bytes(detector_path), empty, (320, 320), MIN_FACE_SCORE,
-        )
-        self._recognizer = cv2.FaceRecognizerSF.create(
-            "onnx", read_bytes(recognizer_path), empty,
-        )
+        with loading_model(detector_path):
+            self._detector = cv2.FaceDetectorYN.create(
+                "onnx", read_bytes(detector_path), empty, (320, 320), MIN_FACE_SCORE,
+            )
+        with loading_model(recognizer_path):
+            self._recognizer = cv2.FaceRecognizerSF.create(
+                "onnx", read_bytes(recognizer_path), empty,
+            )
 
     def describe(self, image: NDArray) -> NDArray[np.float32]:
         """

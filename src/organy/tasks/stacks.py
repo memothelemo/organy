@@ -62,8 +62,7 @@ def find_stacks(
 
     # Photos without a time go last, in the order they were given.
     order = sorted(photos, key=lambda photo: _time_key(photo, times))
-    similarity = np.vstack([embeddings[photo] for photo in order])
-    similarity = similarity @ similarity.T
+    table = np.vstack([embeddings[photo] for photo in order])
 
     matcher = SceneMatcher()
     face_features: dict[Photograph, NDArray[np.float32]] = {}
@@ -93,8 +92,13 @@ def find_stacks(
 
         stacked[index] = True
         stack = [order[index]]
-        for other in np.flatnonzero(~stacked & (similarity[index] >= MIN_CLOSE_CALL_SIMILARITY)):
-            if similarity[index, other] >= STACK_SIMILARITY or confirm(order[index], order[other]):
+
+        # Only the first photo of each stack is compared with the others, so its
+        # similarities are computed here, one row at a time. A full table of
+        # every photo against every other would take 1.6 GB for 20,000 photos.
+        similarity = table @ table[index]
+        for other in np.flatnonzero(~stacked & (similarity >= MIN_CLOSE_CALL_SIMILARITY)):
+            if similarity[other] >= STACK_SIMILARITY or confirm(order[index], order[other]):
                 stacked[other] = True
                 stack.append(order[other])
 

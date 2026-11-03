@@ -8,12 +8,18 @@ from datetime import datetime, timedelta
 from organy.models import Photograph
 
 
-# Default shortest gap between two photos that starts a new event. Shots of
-# one performance on the 49 stock photos were at most a few minutes apart,
-# while separate performances were usually more than half an hour apart.
+# Default shortest gap between two photos that starts a new event. On the 49
+# stock photos, events were compared with the performer and day saved in each
+# photo's EXIF:
+# - 30 minutes merged back-to-back performances: only 61% of the photo pairs
+#   put in one event belonged to the same performance
+# - 10 to 20 minutes all put at least 84% of each performance together, with
+#   at least 89% of the pairs in one event belonging to one performance
+# - 15 minutes, used here, gave 88% and 95%
 #
-# This still needs checking against real event photos.
-DEFAULT_EVENT_GAP = timedelta(minutes=30)
+# It was chosen on those same photos, so it still needs checking against
+# real event photos.
+DEFAULT_EVENT_GAP = timedelta(minutes=15)
 
 
 def split_events(

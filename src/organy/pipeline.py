@@ -5,7 +5,7 @@ selected. Each stage does its work and logs a short summary of it.
 
 import time
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime, timedelta
 from loguru import logger
 from numpy.typing import NDArray
@@ -106,18 +106,21 @@ def tag_photos(
     text_model_path: Path,
     vocab_path: Path,
     merges_path: Path,
-    tags: Mapping[str, str] = tagging.DEFAULT_TAGS,
+    tags: Mapping[str, Sequence[str]] = tagging.DEFAULT_TAGS,
 ) -> dict[Photograph, list[tuple[str, float]]]:
     """
     Stage 4.6.: Tags every photo with what it shows, by comparing its
-    embedding with the embedding of each tag's prompt (`tags`, see
-    `organy.tasks.tagging.DEFAULT_TAGS`). The prompts are embedded once with
-    the CLIP text model and its tokenizer files ("vocab.json" and "merges.txt").
+    embedding with the embeddings of each tag's prompts (`tags`, see
+    `organy.tasks.tagging.DEFAULT_TAGS`) and of a few neutral captions. The
+    prompts are embedded once with the CLIP text model and its tokenizer files
+    ("vocab.json" and "merges.txt"); see `organy.tasks.tagging.tag_photos`.
     """
     start = time.perf_counter()
     tokenizer = tagging.ClipTokenizer(vocab_path, merges_path)
-    prompts = tagging.embed_prompts(tagging.load_text_model(text_model_path), tokenizer, tags)
-    tagged = tagging.tag_photos(embeddings, prompts)
+    model = tagging.load_text_model(text_model_path)
+    prompts = tagging.embed_prompts(model, tokenizer, tags)
+    neutral = tagging.embed_texts(model, tokenizer, tagging.NEUTRAL_PROMPTS)
+    tagged = tagging.tag_photos(embeddings, prompts, neutral)
     elapsed_ms = (time.perf_counter() - start) * 1000
 
     count = sum(1 for photo_tags in tagged.values() if photo_tags)
