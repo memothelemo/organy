@@ -4,9 +4,11 @@ inside one event.
 """
 
 import numpy as np
+import time
 
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta
+from loguru import logger
 from numpy.typing import NDArray
 
 from organy.models import Photograph
@@ -90,6 +92,7 @@ def find_stacks(
     for index in range(len(order)):
         if stacked[index]: continue
 
+        start = time.perf_counter()
         stacked[index] = True
         stack = [order[index]]
 
@@ -103,6 +106,10 @@ def find_stacks(
                 stack.append(order[other])
 
         stacks.append(stack)
+        logger.trace(
+            "found stack with {} photo(s) ({} of {} photos stacked) in {:.1f} ms",
+            len(stack), int(np.count_nonzero(stacked)), len(order), (time.perf_counter() - start) * 1000,
+        )
 
     return stacks
 

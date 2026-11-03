@@ -4,6 +4,7 @@ Tasks related to splitting the shared timeline of photos into events.
 
 from collections.abc import Mapping
 from datetime import datetime, timedelta
+from loguru import logger
 
 from organy.models import Photograph
 
@@ -50,5 +51,11 @@ def split_events(
             events.append([])
         events[-1].append(photo)
         previous = time
+
+    for number, event in enumerate(events, start=1):
+        logger.trace(
+            "found event ({} of {}) with {} photo(s), from {} to {}",
+            number, len(events), len(event), times[event[0]], times[event[-1]],
+        )
 
     return events, untimed

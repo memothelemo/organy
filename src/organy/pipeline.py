@@ -89,7 +89,16 @@ def find_stacks(
     """
     start = time.perf_counter()
     recognizer = None if face_models is None else faces.FaceRecognizer(*face_models)
-    found = [stacks.find_stacks(event, embeddings, times, recognizer) for event in photo_events]
+
+    found: list[list[list[Photograph]]] = []
+    for number, event in enumerate(photo_events, start=1):
+        event_start = time.perf_counter()
+        found.append(stacks.find_stacks(event, embeddings, times, recognizer))
+        logger.debug(
+            "stacked group ({} of {}): {} photo(s) into {} stack(s) in {:.1f} ms",
+            number, len(photo_events), len(event), len(found[-1]), (time.perf_counter() - event_start) * 1000,
+        )
+
     elapsed_ms = (time.perf_counter() - start) * 1000
 
     count = sum(len(event) for event in found)
@@ -130,17 +139,31 @@ def tag_photos(
 
 def suggest_best_photos(
     photo_stacks: Iterable[list[Photograph]],
+    workers: int = 1,
 ) -> list[tuple[Photograph, dict[Photograph, selection.PhotoQuality]]]:
     """
     Stage 4.7.: Suggests the best photo of every stack by sharpness and
     exposure, along with every photo's raw measurements so the user can pick
-    another one. See `organy.tasks.selection.suggest_best_photo`.
+    another one. See `organy.tasks.selection.choose_best_photo`.
+
+    `workers` is how many photos are measured at the same time; see
+    `organy.tasks.selection.measure_qualities`. All photos of all stacks are
+    measured together, so one large stack does not leave the other workers idle.
     """
     start = time.perf_counter()
-    suggestions = [selection.suggest_best_photo(stack) for stack in photo_stacks]
+    all_stacks = list(photo_stacks)
+    qualities = selection.measure_qualities([photo for stack in all_stacks for photo in stack], workers=workers)
+
+    suggestions = [
+        (selection.choose_best_photo(stack, qualities), {photo: qualities[photo] for photo in stack})
+        for stack in all_stacks
+    ]
     elapsed_ms = (time.perf_counter() - start) * 1000
 
-    logger.info("suggested the best photo of {} stack(s) (took {:.1f} ms)", len(suggestions), elapsed_ms)
+    logger.info(
+        "suggested the best photo of {} stack(s) with {} worker(s) (took {:.1f} ms)",
+        len(suggestions), workers, elapsed_ms,
+    )
     return suggestions
 
 

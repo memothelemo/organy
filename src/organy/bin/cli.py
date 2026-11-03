@@ -121,7 +121,9 @@ def _sort_photos(photos: list[Photograph], models: Path, args: argparse.Namespac
     tags = pipeline.tag_photos(
         embeddings, models / CLIP_TEXT_MODEL, models / CLIP_VOCAB, models / CLIP_MERGES,
     )
-    suggestions = iter(pipeline.suggest_best_photos(stack for group in stacks for stack in group))
+    suggestions = iter(pipeline.suggest_best_photos(
+        (stack for group in stacks for stack in group), workers=args.workers,
+    ))
 
     return Results(
         groups=[

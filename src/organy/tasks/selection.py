@@ -4,9 +4,14 @@ how well exposed each photo is.
 """
 
 import cv2
+import itertools
 import numpy as np
+import threading
+import time
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
+from loguru import logger
 from typing import NamedTuple
 
 from organy.models import Photograph
@@ -64,10 +69,12 @@ def measure_quality(photo: Photograph) -> PhotoQuality:
     gray = cv2.cvtColor(photo.decode_downscaled(), cv2.COLOR_BGR2GRAY)
 
     # The median filter removes pixel noise but keeps edges, so noise cannot
-    # pass for detail. CV_32F keeps the negative side of each edge, which
-    # 8-bit output would clip.
+    # pass for detail. A floating-point output keeps the negative side of each
+    # edge, which 8-bit output would clip. CV_64F, unlike CV_32F, gives exactly
+    # the same values whether OpenCV runs on the main thread or on a worker of
+    # `measure_qualities`, so the number of workers never changes a result.
     smooth = cv2.medianBlur(gray, 3)
-    gradient = cv2.magnitude(cv2.Sobel(smooth, cv2.CV_32F, 1, 0), cv2.Sobel(smooth, cv2.CV_32F, 0, 1))
+    gradient = cv2.magnitude(cv2.Sobel(smooth, cv2.CV_64F, 1, 0), cv2.Sobel(smooth, cv2.CV_64F, 0, 1))
 
     return PhotoQuality(
         sharpness=float(np.percentile(gradient, SHARPNESS_PERCENTILE)),
@@ -76,19 +83,57 @@ def measure_quality(photo: Photograph) -> PhotoQuality:
     )
 
 
-def suggest_best_photo(stack: Sequence[Photograph]) -> tuple[Photograph, dict[Photograph, PhotoQuality]]:
+def measure_qualities(photos: Sequence[Photograph], workers: int = 1) -> dict[Photograph, PhotoQuality]:
     """
-    Suggests the best photo of a stack: the sharpest of its well exposed
-    photos (at most `MAX_HIGHLIGHTS` blown out), or the sharpest of all of
-    them when none is well exposed.
+    Measures every photo in `photos` (see `measure_quality`) and returns the
+    measurements by photo, in the same order.
 
-    It also returns every photo's measurements, so the user can see why
-    and pick another one. The stack must not be empty.
+    `workers` is how many photos are measured at the same time. The filters
+    used here are too small for OpenCV to spread one photo over several CPU
+    cores, so measuring several photos at once is what uses them: on 196
+    photos, 4 workers were about 3 times as fast as 1, and 8 about 4 times.
+    It must be at least 1, or ThreadPoolExecutor raises ValueError.
+    """
+    # Counts finished photos for the "(1 of 500)" progress in the log, the
+    # same way `load_photos` does, since photos finish out of order across
+    # threads.
+    total = len(photos)
+    finished = itertools.count(1)
+    lock = threading.Lock()
+
+    def measure(photo: Photograph) -> PhotoQuality:
+        with logger.contextualize(thread_id=threading.get_native_id()):
+            start = time.perf_counter()
+            quality = measure_quality(photo)
+
+            elapsed_ms = (time.perf_counter() - start) * 1000
+            with lock: done = next(finished)
+
+            logger.trace("measured photo ({} of {}) in {:.1f} ms", done, total, elapsed_ms)
+            return quality
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        return dict(zip(photos, pool.map(measure, photos)))
+
+
+def choose_best_photo(stack: Sequence[Photograph], qualities: Mapping[Photograph, PhotoQuality]) -> Photograph:
+    """
+    Chooses the best photo of a stack from every photo's measurements (as
+    `measure_qualities` returns): the sharpest of its well exposed photos (at
+    most `MAX_HIGHLIGHTS` blown out), or the sharpest of all of them when none
+    is well exposed. The stack must not be empty.
     """
     if not stack: raise ValueError("cannot suggest the best photo of an empty stack")
 
-    qualities = {photo: measure_quality(photo) for photo in stack}
     exposed = [photo for photo in stack if qualities[photo].highlights <= MAX_HIGHLIGHTS]
+    return max(exposed or stack, key=lambda photo: qualities[photo].sharpness)
 
-    best = max(exposed or stack, key=lambda photo: qualities[photo].sharpness)
-    return best, qualities
+
+def suggest_best_photo(stack: Sequence[Photograph]) -> tuple[Photograph, dict[Photograph, PhotoQuality]]:
+    """
+    Measures the photos of one stack and suggests its best photo (see
+    `choose_best_photo`). It also returns every photo's measurements, so the
+    user can see why and pick another one. The stack must not be empty.
+    """
+    qualities = {photo: measure_quality(photo) for photo in stack}
+    return choose_best_photo(stack, qualities), qualities

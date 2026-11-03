@@ -7,9 +7,11 @@ import cv2
 import json
 import numpy as np
 import re
+import time
 
 from collections.abc import Mapping, Sequence
 from functools import cache
+from loguru import logger
 from numpy.typing import NDArray
 from pathlib import Path
 
@@ -208,10 +210,14 @@ def embed_texts(model: cv2.dnn.Net, tokenizer: ClipTokenizer, texts: Sequence[st
     Each text takes about 20 ms, and only has to be embedded once for all photos.
     """
     rows: list[NDArray[np.float32]] = []
-    for text in texts:
+    for number, text in enumerate(texts, start=1):
+        start = time.perf_counter()
         model.setInput(tokenizer.encode(text), "input_ids")
         embedding = np.asarray(model.forward(), dtype=np.float32).ravel()
         rows.append(embedding / np.linalg.norm(embedding))
+
+        elapsed_ms = (time.perf_counter() - start) * 1000
+        logger.trace("embedded prompt ({} of {}) in {:.1f} ms: {!r}", number, len(texts), elapsed_ms, text)
 
     return np.vstack(rows) if rows else np.empty((0, 0), dtype=np.float32)
 
@@ -226,7 +232,18 @@ def embed_prompts(
     its prompts, like `DEFAULT_TAGS`) and returns them by tag, as tables from
     `embed_texts`. A tag without prompts is left out.
     """
-    return {tag: embed_texts(model, tokenizer, texts) for tag, texts in prompts.items() if texts}
+    # Every prompt is embedded in one go, so the progress counts all of them,
+    # and the table is then cut back into one part per tag.
+    kept = {tag: list(texts) for tag, texts in prompts.items() if texts}
+    table = embed_texts(model, tokenizer, [text for texts in kept.values() for text in texts])
+
+    embeddings: dict[str, NDArray[np.float32]] = {}
+    start = 0
+    for tag, texts in kept.items():
+        embeddings[tag] = table[start:start + len(texts)]
+        start += len(texts)
+
+    return embeddings
 
 
 def tag_photos(
@@ -262,9 +279,13 @@ def tag_photos(
     gains = similarity - (table @ neutral.T).mean(axis=1, keepdims=True)
 
     tagged: dict[Photograph, list[tuple[str, float]]] = {}
-    for photo, row in zip(photos, gains):
+    for number, (photo, row) in enumerate(zip(photos, gains), start=1):
         order = np.argsort(-row)[:MAX_TAGS]
         tagged[photo] = [(tags[index], float(row[index])) for index in order if row[index] >= MIN_TAG_GAIN]
+        logger.trace(
+            "tagged photo ({} of {}): {}",
+            number, len(photos), ", ".join(tag for tag, _ in tagged[photo]) or "(none)",
+        )
 
     return tagged
 
