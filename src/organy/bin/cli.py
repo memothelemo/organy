@@ -39,33 +39,34 @@ def main(argv: list[str] | None = None) -> int:
     # TODO: Stage 4 (Fun part), as functions in `organy.pipeline`. Each step
     # only suggests. The user must review everything at the end.
     #
-    # 1. Read each photo's capture time from EXIF (DateTimeOriginal, plus
-    #    SubSecTimeOriginal and OffsetTimeOriginal when present). Flag photos
-    #    without one instead of guessing.
-    # 2. Compute an embedding for each photo: a fingerprint like phash, but
-    #    with more data and more accurate. It describes what the photo shows,
-    #    so two photos of the same scene get close embeddings even with
-    #    different colour grading or viewpoints. It comes from a downloaded
-    #    model (e.g. CLIP) run through `cv2.dnn`.
-    # 3. Estimate each photographer's clock offset. Take the closest embedding
-    #    pairs between different photographers, confirm them with ORB matches
-    #    and a RANSAC homography, and use the median of their time
-    #    differences. Let the user correct it later.
-    # 4. Split the corrected timeline into events wherever there is a long gap
-    #    between photos. Never merge events automatically (rule 6).
-    # 5. Inside each event, group photos of the same scene or moment into
-    #    stacks by embedding similarity, with ORB matches to confirm close
-    #    calls. Faces add evidence: detect with `cv2.FaceDetectorYN` (YuNet)
-    #    and compare with `cv2.FaceRecognizerSF` (SFace). Stacks never change
-    #    a photo's event (rule 5).
-    # 6. Tag each photo by comparing its CLIP embedding with text prompts
-    #    ("stage", "group photo", "food", ...). The prompts are embedded once,
-    #    so tags cost almost nothing per photo. Use them for search and stack
-    #    names, not for grouping.
-    # 7. Inside each stack, suggest the best photo by sharpness (Laplacian variance)
-    #    and exposure. Show the raw values, never as "confidence".
+    # [/] 1. Read each photo's capture time from EXIF (DateTimeOriginal, plus
+    #        SubSecTimeOriginal and OffsetTimeOriginal when present). Flag photos
+    #        without one instead of guessing.
+    # [/] 2. Compute an embedding for each photo: a fingerprint like phash, but
+    #        with more data and more accurate. It describes what the photo shows,
+    #        so two photos of the same scene get close embeddings even with
+    #        different colour grading or viewpoints. It comes from a downloaded
+    #        model (e.g. CLIP) run through `cv2.dnn`.
+    # [/] 3. Estimate each photographer's clock offset. Take the closest embedding
+    #        pairs between different photographers, confirm them with ORB matches
+    #        and a RANSAC homography, and use the median of their time
+    #        differences. Let the user correct it later.
+    # [ ] 4. Split the corrected timeline into events wherever there is a long gap
+    #        between photos. Never merge events automatically (rule 6).
+    # [ ] 5. Inside each event, group photos of the same scene or moment into
+    #        stacks by embedding similarity, with ORB matches to confirm close
+    #        calls. Faces add evidence: detect with `cv2.FaceDetectorYN` (YuNet)
+    #        and compare with `cv2.FaceRecognizerSF` (SFace). Stacks never change
+    #        a photo's event (rule 5).
+    # [ ] 6. Tag each photo by comparing its CLIP embedding with text prompts
+    #        ("stage", "group photo", "food", ...). The prompts are embedded once,
+    #        so tags cost almost nothing per photo. Use them for search and stack
+    #        names, not for grouping.
+    # [ ] 7. Inside each stack, suggest the best photo by sharpness (Laplacian variance)
+    #        and exposure. Show the raw values, never as "confidence".
     embeddings = pipeline.compute_embeddings(photos, "models/clip-vit-base-patch32-vision.onnx")
-
+    times_per_photo = pipeline.estimate_camera_times(embeddings)
+    
     return 0
 
 

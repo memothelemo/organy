@@ -4,6 +4,8 @@ import organy.tasks.embedding as embedding
 from organy.tasks.imports import collect_photos, load_photos
 import organy.tasks.imports as imports
 
+import organy.tasks.time_adjustment as time_adjustment
+
 __all__ = [
     "get_duplicated_photos",
 
@@ -12,4 +14,6 @@ __all__ = [
     "imports",
     "collect_photos",
     "load_photos",
+
+    "time_adjustment",
 ]

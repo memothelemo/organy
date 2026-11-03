@@ -5,13 +5,14 @@ selected. Each stage does its work and logs a short summary of it.
 
 import time
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
+from datetime import datetime, timedelta
 from loguru import logger
 from numpy.typing import NDArray
 from pathlib import Path
 
 from organy.models import Photograph
-from organy.tasks import collect_photos, embedding, get_duplicated_photos, imports
+from organy.tasks import collect_photos, embedding, get_duplicated_photos, imports, time_adjustment
 
 
 def compute_embeddings(
@@ -30,6 +31,25 @@ def compute_embeddings(
 
     logger.info("computed {} embedding(s) (took {:.1f} ms)", len(embeddings), elapsed_ms)
     return embeddings
+
+
+def estimate_camera_times(
+    embeddings: dict[Photograph, NDArray],
+    offsets: Mapping[str, timedelta] | None = None,
+) -> dict[Photograph, datetime | None]:
+    """
+    Stage 4.3.: Corrects every photographer's camera clock against one
+    reference photographer, so photos from every camera share one timeline.
+    The clock offsets are estimated from photos of the same moment unless the
+    user gives them; see `organy.tasks.time_adjustment.estimate_camera_times`.
+    """
+    start = time.perf_counter()
+    times = time_adjustment.estimate_camera_times(embeddings, offsets)
+    elapsed_ms = (time.perf_counter() - start) * 1000
+
+    timed = sum(1 for value in times.values() if value is not None)
+    logger.info("estimated time of {} of {} photo(s) (took {:.1f} ms)", timed, len(times), elapsed_ms)
+    return times
 
 
 def import_photos(sources: Iterable[Path]) -> dict[Path, str]:
