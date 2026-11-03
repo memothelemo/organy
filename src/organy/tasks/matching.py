@@ -26,6 +26,9 @@ MATCH_RATIO = 0.75
 RANSAC_THRESHOLD = 5.0
 MIN_INLIERS = 20
 
+# Size in pixels of the square ORB describes around each corner (OpenCV's default).
+ORB_PATCH_SIZE = 31
+
 # Smallest part of the photo that the agreeing matches must cover, from 0
 # to 1 (see `SceneMatcher.measure`). On the 49 stock photos, every photo
 # carries the same small watermark, and it alone gave unrelated photos up to
@@ -59,8 +62,15 @@ class SceneMatcher:
         assert threading.get_ident() == self._thread, "SceneMatcher used outside the thread that created it"
         if photo not in self._features:
             gray = cv2.cvtColor(photo.decode_downscaled(), cv2.COLOR_BGR2GRAY)
-            keypoints, descriptors = self._orb.detectAndCompute(gray, None)
-            self._features[photo] = (keypoints, descriptors, gray.shape[0] * gray.shape[1])
+
+            # ORB fails on photos smaller than its patch (OpenCV raises an
+            # assertion while building its image pyramid), and finds no corners
+            # in them anyway.
+            if min(gray.shape) < ORB_PATCH_SIZE:
+                self._features[photo] = ((), None, gray.shape[0] * gray.shape[1])
+            else:
+                keypoints, descriptors = self._orb.detectAndCompute(gray, None)
+                self._features[photo] = (keypoints, descriptors, gray.shape[0] * gray.shape[1])
         return self._features[photo]
 
     def measure(self, a: Photograph, b: Photograph) -> tuple[int, float]:
@@ -89,10 +99,14 @@ class SceneMatcher:
 
         points_a = np.array([keypoints_a[m.queryIdx].pt for m in matches], dtype=np.float32)
         points_b = np.array([keypoints_b[m.trainIdx].pt for m in matches], dtype=np.float32)
-        _, mask = cv2.findHomography(points_a, points_b, cv2.RANSAC, RANSAC_THRESHOLD)
-        if mask is None: return 0, 0.0
+        # When no homography fits, such as when every match lies on one line,
+        # OpenCV returns no homography and a mask of all zeros rather than None.
+        homography, mask = cv2.findHomography(points_a, points_b, cv2.RANSAC, RANSAC_THRESHOLD)
+        if homography is None or mask is None: return 0, 0.0
 
         inliers = points_a[mask.ravel() != 0]
+        if len(inliers) == 0: return 0, 0.0
+
         low, high = np.percentile(inliers, [5, 95], axis=0)
         width, height = high - low
         return len(inliers), float(width * height) / area

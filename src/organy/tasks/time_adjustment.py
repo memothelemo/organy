@@ -11,7 +11,6 @@ from loguru import logger
 from numpy.typing import NDArray
 
 from organy.models import Photograph
-from organy.tasks.matching import SceneMatcher
 
 
 # Lowest embedding similarity (see `compute_photo_embedding`) for two photos
@@ -20,14 +19,15 @@ from organy.tasks.matching import SceneMatcher
 # lower. This still needs checking against real event photos.
 MIN_PAIR_SIMILARITY = 0.8
 
-# Most candidate pairs checked with ORB for each two photographers. Only the
-# most similar pairs are checked, since each check costs a few tens of ms.
-MAX_PAIRS_PER_PHOTOGRAPHERS = 20
+# Widest spread of time differences, in seconds, for candidate pairs to
+# agree on one clock offset. Two photographers rarely press the shutter at the
+# same instant, so pairs of the same moment differ by up to a minute or two.
+AGREEMENT_WINDOW = 120.0
 
-# Confirmed pairs that two photographers need before their clock offset is
-# trusted. A single pair could be two shots of the same spot at different
-# times, and the median of a few pairs leaves such outliers out.
-MIN_CONFIRMED_PAIRS = 3
+# Candidate pairs that must agree on an offset before it is trusted. Wrong
+# pairs (similar scenes at different times) give scattered differences, so
+# several pairs agreeing by chance is unlikely.
+MIN_AGREEING_PAIRS = 3
 
 
 def estimate_camera_times(
@@ -65,14 +65,20 @@ def estimate_clock_offsets(photos: Mapping[Photograph, NDArray[np.float32]]) -> 
     reference photographer: the one with the most photos that have a camera
     time. Adding a photographer's offset to their camera times puts them on
     the reference clock, whose own offset is zero.
-    - For each two photographers, their most similar photos (by embedding) are
-      paired, and each pair is confirmed with ORB matches (see `SceneMatcher`).
-    - The median time difference of the confirmed pairs is their clock offset.
+    - For each two photographers, their most similar photos (by embedding)
+      are paired (see `_find_candidate_pairs`).
+    - Their clock offset is the one that the most pairs agree on (see
+      `_find_agreeing_offset`). Pairs of the same moment agree, while pairs of
+      similar scenes at different times scatter.
     - Photographers are linked to the reference through the photographers they
-      share the most confirmed pairs with.
+      share the most agreeing pairs with.
 
-    A photographer that shares too few confirmed pairs with the others (see
-    `MIN_CONFIRMED_PAIRS`) gets no offset, since there is nothing to compare
+    Pairs are not checked one by one with ORB matches: photographers stand in
+    different places in front of a scene with moving people, which a
+    homography cannot fit, so almost no real pairs passed on event photos.
+
+    A photographer that shares too few agreeing pairs with the others (see
+    `MIN_AGREEING_PAIRS`) gets no offset, since there is nothing to compare
     their clock with. They are left out and logged so the user can set one.
     """
     by_photographer: dict[str, list[Photograph]] = {}
@@ -82,9 +88,7 @@ def estimate_clock_offsets(photos: Mapping[Photograph, NDArray[np.float32]]) -> 
 
     if not by_photographer: return {}
 
-    matcher = SceneMatcher()
-
-    # (a, b) -> (median of a's time minus b's time, number of confirmed pairs)
+    # (a, b) -> (a's time minus b's time that the pairs agree on, number of agreeing pairs)
     links: dict[tuple[str, str], tuple[timedelta, int]] = {}
     names = sorted(by_photographer)
     for i, a in enumerate(names):
@@ -93,19 +97,21 @@ def estimate_clock_offsets(photos: Mapping[Photograph, NDArray[np.float32]]) -> 
 
             differences: list[float] = []
             for photo_a, photo_b in candidates:
-                if not matcher.is_same_scene(photo_a, photo_b): continue
-
                 time_a, time_b = _wall_clock(photo_a), _wall_clock(photo_b)
                 assert time_a is not None and time_b is not None
                 differences.append((time_a - time_b).total_seconds())
 
-            logger.debug(
-                "confirmed {} of {} candidate pair(s) between {} and {}",
-                len(differences), len(candidates), a, b,
-            )
-            if len(differences) < MIN_CONFIRMED_PAIRS: continue
+            agreement = _find_agreeing_offset(differences)
+            if agreement is None:
+                logger.debug("no offset agreed by {} candidate pair(s) between {} and {}", len(differences), a, b)
+                continue
 
-            links[(a, b)] = (timedelta(seconds=float(np.median(differences))), len(differences))
+            offset, support = agreement
+            logger.debug(
+                "{} of {} candidate pair(s) between {} and {} agree on {:+.1f} s",
+                support, len(differences), a, b, offset,
+            )
+            links[(a, b)] = (timedelta(seconds=offset), support)
 
     # The reference is the photographer with the most timed photos, the name
     # breaking ties so the same photos always give the same result.
@@ -113,7 +119,7 @@ def estimate_clock_offsets(photos: Mapping[Photograph, NDArray[np.float32]]) -> 
     offsets = {reference: timedelta(0)}
 
     # Grow the set of linked photographers one at a time, always through the
-    # link with the most confirmed pairs, so each offset comes from the best
+    # link with the most agreeing pairs, so each offset comes from the best
     # supported chain back to the reference (a maximum spanning tree).
     while True:
         best: tuple[int, str, timedelta] | None = None
@@ -149,8 +155,6 @@ def _find_candidate_pairs(
     """
     Pairs photos of one photographer with photos of another that are each
     other's most similar photo (by embedding), at least `MIN_PAIR_SIMILARITY`.
-    Only the `MAX_PAIRS_PER_PHOTOGRAPHERS` most similar pairs are returned,
-    most similar first.
 
     Both photos must be each other's best match, so one photo is never paired
     with many photos of a burst from the other photographer.
@@ -162,13 +166,41 @@ def _find_candidate_pairs(
     best_b = similarity.argmax(axis=1)
     best_a = similarity.argmax(axis=0)
 
-    pairs = [
-        (float(similarity[i, j]), i, int(j))
+    return [
+        (photos_a[i], photos_b[j])
         for i, j in enumerate(best_b)
         if best_a[j] == i and similarity[i, j] >= MIN_PAIR_SIMILARITY
     ]
-    pairs.sort(reverse=True)
-    return [(photos_a[i], photos_b[j]) for _, i, j in pairs[:MAX_PAIRS_PER_PHOTOGRAPHERS]]
+
+
+def _find_agreeing_offset(differences: list[float]) -> tuple[float, int] | None:
+    """
+    Finds the time difference (in seconds) that the most candidate pairs agree
+    on: the most pairs whose differences fit within `AGREEMENT_WINDOW`. It
+    returns the median difference of those pairs and how many there are.
+
+    It returns None when fewer than `MIN_AGREEING_PAIRS` agree, or when
+    another, separate group of pairs agrees just as well, since there is then
+    no telling which group is right.
+    """
+    values = np.sort(np.asarray(differences, dtype=np.float64))
+
+    # For each pair (in order of difference), `ends[i]` is one past the last
+    # pair within the window that starts at it, so `ends[i] - i` pairs agree.
+    ends = np.searchsorted(values, values + AGREEMENT_WINDOW, side="right")
+    counts = ends - np.arange(len(values))
+    if len(values) == 0 or counts.max() < MIN_AGREEING_PAIRS: return None
+
+    start = int(counts.argmax())
+    end = int(ends[start])
+
+    # Another window as full as the best one, not overlapping it, makes the
+    # offset ambiguous.
+    low, high = values[start] - AGREEMENT_WINDOW, values[end - 1] + AGREEMENT_WINDOW
+    for other in np.flatnonzero(counts == counts[start]):
+        if values[other] > high or values[ends[other] - 1] < low: return None
+
+    return float(np.median(values[start:end])), end - start
 
 
 def _wall_clock(photo: Photograph) -> datetime | None:

@@ -8,15 +8,13 @@ import argparse
 import io
 import sys
 
-from collections.abc import Iterator, Mapping
-from datetime import datetime, timedelta
+from datetime import timedelta
 from pathlib import Path
 
 from loguru import logger
 from organy import pipeline
-from organy.models import Photograph
+from organy.bin.results import ResultGroup, Results, ResultStack, print_report
 from organy.tasks.events import DEFAULT_EVENT_GAP
-from organy.tasks.selection import PhotoQuality
 from organy.utils.os import get_recommended_workers
 from organy.utils.types import non_zero_uint
 
@@ -57,8 +55,20 @@ def main(argv: list[str] | None = None) -> int:
         print(f"organy: missing model file(s) in {models}: {', '.join(missing)}", file=sys.stderr)
         return 1
 
+    sources: list[Path] = args.sources
+    if not sources:
+        if args.no_ui:
+            print("organy: no photos given, pass photo files or folders when using --no-ui", file=sys.stderr)
+            return 1
+
+        from organy.bin.dialogs import ask_photo_sources
+        sources = ask_photo_sources()
+        if not sources:
+            logger.info("no photos selected, nothing to do")
+            return 0
+
     try:
-        imported = pipeline.import_photos(args.sources)
+        imported = pipeline.import_photos(sources)
     except FileNotFoundError as error:
         print(f"organy: {error}", file=sys.stderr)
         return 1
@@ -80,9 +90,26 @@ def main(argv: list[str] | None = None) -> int:
     tags = pipeline.tag_photos(
         embeddings, models / CLIP_TEXT_MODEL, models / CLIP_VOCAB, models / CLIP_MERGES,
     )
-    suggestions = pipeline.suggest_best_photos(stack for group in stacks for stack in group)
+    suggestions = iter(pipeline.suggest_best_photos(stack for group in stacks for stack in group))
 
-    _print_report(stacks, len(events), times, tags, iter(suggestions))
+    results = Results(
+        groups=[
+            ResultGroup(
+                stacks=[ResultStack(stack, *next(suggestions)) for stack in group],
+                is_event=index < len(events),
+            )
+            for index, group in enumerate(stacks)
+        ],
+        times=times,
+        tags=tags,
+    )
+
+    if args.no_ui:
+        print_report(results)
+    else:
+        # Imported here so the window's modules only load when it is shown.
+        from organy.bin.results_window import show_results
+        show_results(results)
     return 0
 
 
@@ -113,10 +140,9 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "sources",
-        # TODO: Switch back to `*` once we implement a selection UI
-        nargs="+",
+        nargs="*",
         type=Path,
-        help="photo files or folders to import",
+        help="photo files or folders to import, chosen in a window when none are given",
     )
     parser.add_argument(
         "-m",
@@ -132,6 +158,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="minutes without photos that start a new event (default: %(default)s)",
     )
     parser.add_argument(
+        "--no-ui",
+        action="store_true",
+        help="print the results as text instead of showing them in a window",
+    )
+    parser.add_argument(
         "--no-faces",
         action="store_true",
         help="do not compare faces when stacking photos",
@@ -145,51 +176,3 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     return parser
 
-
-def _print_report(
-    stacks: list[list[list[Photograph]]],
-    event_count: int,
-    times: Mapping[Photograph, datetime | None],
-    tags: Mapping[Photograph, list[tuple[str, float]]],
-    suggestions: Iterator[tuple[Photograph, dict[Photograph, PhotoQuality]]],
-) -> None:
-    """
-    Prints every event with its stacks for the user to review. The first
-    `event_count` groups in `stacks` are events, and a group after them holds
-    the photos without a shared time. `suggestions` gives the best photo of
-    each stack, in the same order as the stacks.
-
-    Similarities and measurements are printed as raw values. None of them is
-    a confidence.
-    """
-    print("* marks the suggested best photo of each stack.")
-
-    for number, group in enumerate(stacks, start=1):
-        print()
-        if number <= event_count:
-            group_times = [time for stack in group for photo in stack if (time := times.get(photo))]
-            print(
-                f"Event {number}: {_format_time(min(group_times))} to {_format_time(max(group_times))}, "
-                f"{sum(len(stack) for stack in group)} photo(s) in {len(group)} stack(s)"
-            )
-        else:
-            print(f"Photos without a shared time: {sum(len(stack) for stack in group)} in {len(group)} stack(s)")
-
-        for index, stack in enumerate(group, start=1):
-            best, qualities = next(suggestions)
-            print(f"  Stack {index}")
-            for photo in stack:
-                quality = qualities[photo]
-                photo_tags = ", ".join(f"{tag} {similarity:.3f}" for tag, similarity in tags.get(photo, []))
-                print(f"    {'*' if photo is best else ' '} {photo.path}")
-                print(f"        photographer {photo.photographer}, time {_format_time(times.get(photo))}")
-                print(
-                    f"        sharpness {quality.sharpness:.1f}, brightness {quality.brightness:.1f}, "
-                    f"highlights {quality.highlights:.4f}"
-                )
-                print(f"        tags {photo_tags or '(none)'}")
-
-
-def _format_time(time: datetime | None) -> str:
-    """Writes a time to the second, or "(unknown)" when there is none."""
-    return "(unknown)" if time is None else time.strftime("%Y-%m-%d %H:%M:%S")
